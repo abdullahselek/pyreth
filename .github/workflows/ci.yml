@@ -29,7 +29,7 @@ jobs:
       # Pin CMake to a known-good version (project requires >= 3.25).
       # Bump cmake-version here if the lower bound in CMakeLists.txt changes.
       - name: Install CMake
-        uses: cypress-io/setup-cmake@v2
+        uses: jwlawson/actions-setup-cmake@v2
         with:
           cmake-version: '3.31.0'
 
