@@ -31,15 +31,22 @@ target_include_directories(EngineCore
 
 target_compile_definitions(EngineCore PRIVATE PYRETH_EXPORT)
 
-# Apple Clang / Clang warning and architecture flags
-target_compile_options(EngineCore
-    PRIVATE
+# Unified warning flags across compilers
+if(MSVC)
+  target_compile_options(EngineCore PRIVATE
+        /W4
+        /permissive-
+  )
+else()
+  # Apple Clang / Clang warning and architecture flags
+  target_compile_options(EngineCore PRIVATE
         -Wall
         -Wextra
         -Wpedantic
         -Wshadow
         -Wconversion
-)
+  )
+endif()
 
 # Testing (CTest)
 # BUILD_TESTING defaults to ON (from CTest) so the "Quick Start" flow
@@ -80,12 +87,6 @@ target_link_libraries(Sandbox
     PRIVATE
         EngineCore
 )
-
-if(MSVC)
-  target_compile_options(EngineCore PRIVATE /W4)
-else()
-  target_compile_options(EngineCore PRIVATE -Wall -Wextra)
-endif()
 
 # Apple Silicon specific frameworks linkage
 if(APPLE)
