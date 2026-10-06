@@ -26,16 +26,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # Pin CMake to a known-good version (project requires >= 3.25).
-      # Bump cmake-version here if the lower bound in CMakeLists.txt changes.
-      - name: Install CMake
-        uses: jwlawson/actions-setup-cmake@v2
-        with:
-          cmake-version: '3.31.0'
-        env:
-          # windows-latest (Server 2022 / 2025) ships with VS 2022
-          CMAKE_GENERATOR: ${{ runner.os == 'Windows' && 'Visual Studio 17 2022' || '' }}
-
       # CMAKE_BUILD_TYPE is honored by single-config generators (Makefiles/Ninja
       # on Linux & macOS) and safely ignored by the multi-config VS generator.
       # Note: first configure downloads GoogleTest via FetchContent (needs network).
