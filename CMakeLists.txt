@@ -81,6 +81,12 @@ target_link_libraries(Sandbox
         EngineCore
 )
 
+if(MSVC)
+  target_compile_options(EngineCore PRIVATE /W4)
+else()
+  target_compile_options(EngineCore PRIVATE -Wall -Wextra)
+endif()
+
 # Apple Silicon specific frameworks linkage
 if(APPLE)
   target_link_libraries(EngineCore
