@@ -31,4 +31,10 @@ TEST(Foundation, EngineLifecycle) {
   SUCCEED();
 }
 
+// The convenience run() helper executes cleanly.
+TEST(Foundation, RunHelper) {
+  pyreth::run();
+  SUCCEED();
+}
+
 } // namespace

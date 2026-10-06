@@ -29,7 +29,12 @@ target_include_directories(EngineCore
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_compile_definitions(EngineCore PRIVATE PYRETH_EXPORT)
+get_target_property(ENGINE_CORE_TYPE EngineCore TYPE)
+if(ENGINE_CORE_TYPE STREQUAL "STATIC_LIBRARY")
+  target_compile_definitions(EngineCore PUBLIC PYRETH_STATIC_DEFINE)
+else()
+  target_compile_definitions(EngineCore PRIVATE PYRETH_EXPORT)
+endif()
 
 # Unified warning flags across compilers
 if(MSVC)

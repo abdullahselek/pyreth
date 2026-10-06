@@ -12,9 +12,11 @@ inline constexpr const char* PYRETH_VERSION = "0.1.0";
  * @brief Macro for exporting/importing symbols in a cross-platform manner.
  * 
  * Uses __declspec(dllexport/dllimport) on Windows and visibility attributes on GCC/Clang.
+ * When built as a static library, PYRETH_STATIC_DEFINE disables export/import attributes.
  */
-#if defined(_WIN32) || defined(__CYGWIN__)
-
+#if defined(PYRETH_STATIC_DEFINE) || defined(PYRETH_STATIC)
+#define PYRETH_API
+#elif defined(_WIN32) || defined(__CYGWIN__)
 #ifdef PYRETH_EXPORT
 #define PYRETH_API __declspec(dllexport)
 #else
