@@ -20,6 +20,17 @@ pyreth is designed to serve AI model inference with minimal latency and maximum 
 
 - CMake >= 3.25
 - C++20 compiler (Apple Clang / Clang or GCC)
+- Internet access on first configure (CMake `FetchContent` downloads GoogleTest)
+
+## Quick Start
+
+Configure, build, and run the unit tests in three steps:
+
+```sh
+cmake -B build              # configure (GoogleTest is fetched on first run)
+cmake --build build         # build the library, sandbox, and tests
+ctest --test-dir build      # run the unit tests
+```
 
 ## Building
 
@@ -44,7 +55,7 @@ The build produces:
 
 ## Testing
 
-Tests are integrated with CTest (enable a test framework such as GoogleTest or Catch2 as the project grows).
+Unit tests live in `unittest/` and are built with GoogleTest (fetched via CMake `FetchContent` on first configure). Every `*.cpp` file in `unittest/` is picked up automatically, and each test case is registered with CTest.
 
 ```sh
 # Configure with tests enabled
