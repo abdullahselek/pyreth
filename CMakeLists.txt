@@ -41,8 +41,35 @@ target_compile_options(EngineCore
         -Wconversion
 )
 
-# Testing (CTest) — add test targets under a tests/ dir as the project grows
+# Testing (CTest)
+# BUILD_TESTING defaults to ON (from CTest) so the "Quick Start" flow
+# (cmake -B build && ctest --test-dir build) works out of the box.
+# Pass -DBUILD_TESTING=OFF to skip fetching and building the test suite.
 include(CTest)
+
+if(BUILD_TESTING)
+  include(FetchContent)
+
+  # Pin GoogleTest to a known-good release. FetchContent downloads and builds
+  # it as part of this project, so no system-wide GTest install is required.
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
+  )
+
+  # Cross-platform knobs: build GTest against a shared CRT on Windows and do
+  # not install it alongside our artifacts.
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+
+  # If a target already exists (e.g. a cached or pre-provided GTest), don't
+  # re-fetch. Otherwise download, extract, and build it now.
+  if(NOT TARGET gtest)
+    FetchContent_MakeAvailable(googletest)
+  endif()
+
+  add_subdirectory(unittest)
+endif()
 
 # Executable / Sandbox Runner
 add_executable(Sandbox
