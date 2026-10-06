@@ -26,14 +26,21 @@ target_include_directories(pyreth_tests
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Match the core library's strict warning set for consistency.
-target_compile_options(pyreth_tests
+# Unified warning flags across compilers
+if(MSVC)
+  target_compile_options(pyreth_tests PRIVATE
+        /W4
+        /permissive-
+  )
+else()
+  target_compile_options(pyreth_tests
     PRIVATE
         -Wall
         -Wextra
         -Wpedantic
         -Wshadow
 )
+endif()
 
 # Register each GTest case with CTest so it can be run/filtered by name,
 # e.g. `ctest --test-dir build -R "Foundation.EngineLifecycle"`.
