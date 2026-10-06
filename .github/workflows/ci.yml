@@ -1,0 +1,58 @@
+name: CI
+
+# Cancel a superseded run on the same branch/PR so we don't waste runner time.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Allow manual runs from the "Actions" tab.
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Keep going if one OS fails, so we get signal from all three in one run.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Pin CMake to a known-good version (project requires >= 3.25).
+      # Bump cmake-version here if the lower bound in CMakeLists.txt changes.
+      - name: Install CMake
+        uses: cypress-io/setup-cmake@v2
+        with:
+          cmake-version: '3.31.0'
+
+      # CMAKE_BUILD_TYPE is honored by single-config generators (Makefiles/Ninja
+      # on Linux & macOS) and safely ignored by the multi-config VS generator.
+      # Note: first configure downloads GoogleTest via FetchContent (needs network).
+      - name: Configure
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+      # Windows uses the multi-config Visual Studio generator -> build a specific
+      # configuration. Linux/macOS are single-config and use CMAKE_BUILD_TYPE above.
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: cmake --build build --config Release --parallel
+
+      - name: Build (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: cmake --build build --parallel
+
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Test (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: ctest --test-dir build --output-on-failure
