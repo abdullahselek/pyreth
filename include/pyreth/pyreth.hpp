@@ -1,0 +1,36 @@
+#pragma once
+
+#include <pyreth/common.hpp>
+
+namespace pyreth {
+
+/**
+ * @class Pyreth
+ * @brief The main entry point and orchestrator for the Pyreth inference engine.
+ * 
+ * This class handles the initialization of the runtime environment, hardware
+ * acceleration backends, and the internal thread pool.
+ */
+class PYRETH_API Pyreth {
+public:
+  /**
+   * @brief Construct a new Pyreth engine instance.
+   * 
+   * Initializes internal resources and pre-allocates memory pools.
+   */
+  Pyreth();
+
+  /**
+   * @brief Destroy the Pyreth engine instance.
+   * 
+   * Gracefully shuts down worker threads and releases memory pools.
+   */
+  ~Pyreth();
+};
+
+/**
+ * @brief Convenience function to run a demonstration of the engine.
+ */
+void PYRETH_API run();
+
+} // namespace pyreth
