@@ -1,15 +1,15 @@
 #pragma once
 
+#include <pyreth/backend.hpp>
 #include <pyreth/common.hpp>
 #include <pyreth/result.hpp>
-#include <pyreth/backend.hpp>
 
 namespace pyreth {
 
 /**
  * @class Pyreth
  * @brief The main entry point and orchestrator for the Pyreth inference engine.
- * 
+ *
  * This class handles the initialization of the runtime environment, hardware
  * acceleration backends, and the internal thread pool.
  */
@@ -17,14 +17,14 @@ class PYRETH_API Pyreth {
 public:
   /**
    * @brief Construct a new Pyreth engine instance.
-   * 
+   *
    * Initializes internal resources and pre-allocates memory pools.
    */
   Pyreth();
 
   /**
    * @brief Destroy the Pyreth engine instance.
-   * 
+   *
    * Gracefully shuts down worker threads and releases memory pools.
    */
   ~Pyreth();

@@ -102,6 +102,9 @@ target_link_libraries(Sandbox
         EngineCore
 )
 
+# On Windows, copy ONNX Runtime DLLs to the executable directory
+pyreth_copy_ort_dlls(Sandbox)
+
 # Apple Silicon specific frameworks linkage
 if(APPLE)
   target_link_libraries(EngineCore
@@ -110,5 +113,5 @@ if(APPLE)
             "-framework IOKit"
             "-framework CoreVideo"
             "-framework Metal"
-    )
+  )
 endif()

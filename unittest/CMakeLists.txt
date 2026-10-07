@@ -42,7 +42,23 @@ else()
 )
 endif()
 
+# On Windows, copy ONNX Runtime DLLs next to the test executable
+pyreth_copy_ort_dlls(pyreth_tests)
+
 # Register each GTest case with CTest so it can be run/filtered by name,
 # e.g. `ctest --test-dir build -R "Foundation.EngineLifecycle"`.
 include(GoogleTest)
-gtest_discover_tests(pyreth_tests)
+
+if(WIN32)
+  get_target_property(ORT_DLL_PATH onnxruntime::onnxruntime IMPORTED_LOCATION)
+  if(ORT_DLL_PATH)
+    get_filename_component(ORT_DLL_DIR "${ORT_DLL_PATH}" DIRECTORY)
+    gtest_discover_tests(pyreth_tests
+      PROPERTIES ENVIRONMENT "PATH=${ORT_DLL_DIR}\;$ENV{PATH}"
+    )
+  else()
+    gtest_discover_tests(pyreth_tests)
+  endif()
+else()
+  gtest_discover_tests(pyreth_tests)
+endif()
