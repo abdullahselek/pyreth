@@ -97,6 +97,6 @@ if (Backend::hasHardwareAcceleration()) {
 
 ## 4. Hardware Acceleration Notes
 
-* **Apple Silicon (M1/M2/M3/M4)**: The official prebuilt macOS arm64 binary includes native CoreML support. Models can execute operations directly on the Apple Neural Engine (ANE) with low power consumption and high efficiency.
+* **Apple Silicon (M1/M2/M3/M4/M5 and newer)**: The official prebuilt macOS arm64 binary includes native CoreML support. Models can execute operations directly on the Apple Neural Engine (ANE) with low power consumption and high efficiency.
 * **Linux / NVIDIA**: On systems with CUDA and TensorRT installed, prebuilt or custom ORT packages with GPU flags can be supplied via `ONNXRUNTIME_ROOT=/path/to/ort-gpu`.
 * **Universal CPU**: `CPUExecutionProvider` is always guaranteed to be present and serves as the baseline fallback across all operating systems.
