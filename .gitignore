@@ -22,6 +22,7 @@
 *.dylib
 *.dll
 *.so.*
+*.pyd
 
 # Fortran module files
 *.mod
@@ -42,6 +43,9 @@
 build/
 Build/
 build-*/
+dist/
+*.egg-info/
+.eggs/
 
 # CMake generated files
 CMakeFiles/
@@ -51,18 +55,38 @@ Makefile
 install_manifest.txt
 compile_commands.json
 
-# Temporary files
+# Temporary & editor files
 *.tmp
 *.log
 *.bak
 *.swp
+*~
+.DS_Store
+Thumbs.db
 
 # vcpkg
 vcpkg_installed/
 
 # debug information files
 *.dwo
+*.dSYM/
 
-# test output & cache
+# Test output & caches
 Testing/
 .cache/
+
+# Python caches and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Python Virtual Environments
+.venv/
+venv/
+ENV/
+env/
