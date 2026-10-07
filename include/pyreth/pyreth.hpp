@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pyreth/common.hpp>
+#include <pyreth/result.hpp>
 
 namespace pyreth {
 
