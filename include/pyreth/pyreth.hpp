@@ -2,6 +2,7 @@
 
 #include <pyreth/common.hpp>
 #include <pyreth/result.hpp>
+#include <pyreth/backend.hpp>
 
 namespace pyreth {
 

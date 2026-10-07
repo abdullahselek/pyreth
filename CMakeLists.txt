@@ -14,11 +14,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Export compile commands for tooling (clangd, clang-tidy, etc.)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# ONNX Runtime Integration
+include(cmake/OnnxRuntime.cmake)
+
 # Engine Core Target (Static Library)
 # This library contains the core inference logic, thread pool
 # and memory management.
 add_library(EngineCore STATIC
     src/core/pyreth.cpp
+    src/core/backend.cpp
 )
 
 target_include_directories(EngineCore
@@ -86,6 +90,11 @@ endif()
 # Executable / Sandbox Runner
 add_executable(Sandbox
     sandbox/main.cpp
+)
+
+target_link_libraries(EngineCore
+    PUBLIC
+        onnxruntime::onnxruntime
 )
 
 target_link_libraries(Sandbox
