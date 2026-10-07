@@ -9,18 +9,25 @@ pyreth is designed to serve AI model inference with minimal latency and maximum 
 ## Project Layout
 
 ```
-├── include/engine/   # Public headers
-├── src/core/         # Engine core implementation
+├── cmake/            # CMake discovery and helper modules
+├── docs/             # Architecture and guidelines documentation
+├── include/pyreth/   # Public C++ API headers
+├── python/pyreth/    # Python package & nanobind bindings
 ├── sandbox/          # Dev runner / manual integration checks
-├── CMakeLists.txt    # Build configuration
+├── src/core/         # Engine core implementation
+├── tests/python/     # Python pytest integration tests
+├── unittest/         # C++ GTest suite
+├── CMakeLists.txt    # CMake build configuration
+├── pyproject.toml    # Python packaging configuration (uv / scikit-build-core)
 └── build/            # Build artifacts (gitignored)
 ```
 
 ## Requirements
 
 - CMake >= 3.25
-- C++20 compiler (Apple Clang / Clang or GCC)
-- Internet access on first configure (CMake `FetchContent` downloads GoogleTest)
+- C++20 compiler (Apple Clang / Clang, GCC, or MSVC)
+- [uv](https://docs.astral.sh/uv/) (for Python environment and dependency management)
+- Python >= 3.13 (managed automatically by `uv`)
 
 ## Quick Start
 
@@ -75,9 +82,39 @@ ctest --test-dir build --output-on-failure -V
 ```
 
 ## Running the Sandbox
-
+ 
 ```sh
 ./build/Sandbox
+```
+
+## Python Development (`uv`)
+
+Pyreth uses **`uv`** for dependency resolution, virtual environment management, and packaging with `scikit-build-core` and `nanobind`.
+
+### 1. Setup & Build Extension
+
+```sh
+# Sync the virtual environment and compile the C++ nanobind extension
+uv sync
+```
+
+### 2. Run Python Tests
+
+```sh
+# Run pytest tests using the uv-managed environment
+uv run pytest
+```
+
+### 3. Interactive Verification
+
+```sh
+uv run python -c "import pyreth; print('Version:', pyreth.__version__, '| Best Backend:', pyreth.get_best_backend())"
+```
+
+### 4. Linting & Formatting
+
+```sh
+uv run ruff check .
 ```
 
 ## License

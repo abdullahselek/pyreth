@@ -49,3 +49,11 @@ jobs:
       - name: Test (Linux/macOS)
         if: runner.os != 'Windows'
         run: ctest --test-dir build --output-on-failure
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Python tests (uv run pytest)
+        run: |
+          uv sync
+          uv run pytest
