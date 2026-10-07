@@ -115,3 +115,59 @@ if(APPLE)
             "-framework Metal"
   )
 endif()
+
+# Python Extension Module (nanobind)
+# Enabled automatically when invoked by scikit-build-core
+# (SKBUILD) or explicitly via -DBUILD_PYTHON_BINDINGS=ON
+option(BUILD_PYTHON_BINDINGS "Build Python bindings via nanobind" OFF)
+
+if(SKBUILD OR BUILD_PYTHON_BINDINGS)
+  find_package(Python 3.13 COMPONENTS Interpreter Development.Module REQUIRED)
+  find_package(nanobind CONFIG REQUIRED)
+
+  nanobind_add_module(_core
+    python/pyreth_core.cpp
+  )
+
+  target_link_libraries(_core
+    PRIVATE
+        EngineCore
+  )
+
+  # Set RPATH so _core resolves bundled ONNX Runtime libraries
+  if(APPLE)
+    set_target_properties(_core PROPERTIES
+      INSTALL_RPATH "@loader_path"
+      BUILD_WITH_INSTALL_RPATH TRUE
+    )
+  else()
+    set_target_properties(_core PROPERTIES
+      INSTALL_RPATH "$ORIGIN"
+      BUILD_WITH_INSTALL_RPATH TRUE
+    )
+  endif()
+
+  pyreth_copy_ort_dlls(_core)
+
+  install(TARGETS _core
+    LIBRARY DESTINATION pyreth
+    RUNTIME DESTINATION pyreth
+  )
+
+  # Install ONNX Runtime shared libraries into the pyreth package for self-contained wheels
+  if(WIN32)
+    get_target_property(ORT_DLL_PATH onnxruntime::onnxruntime IMPORTED_LOCATION)
+    if(ORT_DLL_PATH)
+      get_filename_component(ORT_DLL_DIR "${ORT_DLL_PATH}" DIRECTORY)
+      file(GLOB ORT_ALL_DLLS "${ORT_DLL_DIR}/*.dll")
+      install(FILES ${ORT_ALL_DLLS} DESTINATION pyreth)
+    endif()
+  else()
+    get_target_property(ORT_LIB_PATH onnxruntime::onnxruntime IMPORTED_LOCATION)
+    if(ORT_LIB_PATH)
+      get_filename_component(ORT_LIB_DIR "${ORT_LIB_PATH}" DIRECTORY)
+      file(GLOB ORT_ALL_LIBS "${ORT_LIB_DIR}/*.dylib" "${ORT_LIB_DIR}/*.so*")
+      install(FILES ${ORT_ALL_LIBS} DESTINATION pyreth)
+    endif()
+  endif()
+endif()

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["scikit-build-core>=0.9.0", "nanobind>=2.4.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pyreth"
+version = "0.1.0"
+description = "High throughput, low latency parallel processing AI model inference engine."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.4.0",
+]
+
+[tool.scikit-build]
+cmake.version = ">=3.25"
+ninja.version = ">=1.10"
+wheel.packages = ["python/pyreth"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
