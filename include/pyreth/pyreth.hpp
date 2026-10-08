@@ -3,6 +3,8 @@
 #include <pyreth/backend.hpp>
 #include <pyreth/common.hpp>
 #include <pyreth/result.hpp>
+#include <pyreth/work_stealing_queue.hpp>
+#include <pyreth/worker_parker.hpp>
 
 namespace pyreth {
 
