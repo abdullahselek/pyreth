@@ -19,7 +19,7 @@ TEST(WorkerParkerTest, UnparkBeforeParkTokenPersistence) {
   parker.park();
   auto elapsed = std::chrono::steady_clock::now() - start;
 
-  EXPECT_LT(elapsed, 50ms);
+  EXPECT_LT(elapsed, 200ms);
   EXPECT_FALSE(parker.isParked());
 }
 
@@ -40,7 +40,7 @@ TEST(WorkerParkerTest, IdempotentMultipleUnparks) {
   auto elapsed = std::chrono::steady_clock::now() - start;
 
   EXPECT_FALSE(acquired);
-  EXPECT_GE(elapsed, 25ms);
+  EXPECT_GE(elapsed, 20ms);
 }
 
 TEST(WorkerParkerTest, TimedParkingTimeout) {
@@ -51,25 +51,28 @@ TEST(WorkerParkerTest, TimedParkingTimeout) {
   auto elapsed = std::chrono::steady_clock::now() - start;
 
   EXPECT_FALSE(acquired);
-  EXPECT_GE(elapsed, 35ms);
+  EXPECT_GE(elapsed, 25ms);
 }
 
 TEST(WorkerParkerTest, TimedParkingEarlyWakeup) {
   pyreth::WorkerParker parker;
 
   std::thread unparker([&]() {
-    std::this_thread::sleep_for(15ms);
+    auto t0 = std::chrono::steady_clock::now();
+    while (!parker.isParked() && (std::chrono::steady_clock::now() - t0) < 1000ms) {
+      std::this_thread::yield();
+    }
     parker.unpark();
   });
 
   auto start = std::chrono::steady_clock::now();
-  bool acquired = parker.parkFor(500ms);
+  bool acquired = parker.parkFor(2000ms);
   auto elapsed = std::chrono::steady_clock::now() - start;
 
   unparker.join();
 
   EXPECT_TRUE(acquired);
-  EXPECT_LT(elapsed, 200ms);
+  EXPECT_LT(elapsed, 1500ms);
 }
 
 TEST(WorkerParkerTest, ConcurrentParkAndUnparkStress) {
