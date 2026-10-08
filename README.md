@@ -26,6 +26,7 @@ pyreth is designed to serve AI model inference with minimal latency and maximum 
 
 - CMake >= 3.25
 - C++20 compiler (Apple Clang / Clang, GCC, or MSVC)
+- `clang-format` (for C++ code formatting)
 - [uv](https://docs.astral.sh/uv/) (for Python environment and dependency management)
 - Python >= 3.13 (managed automatically by `uv`)
 
