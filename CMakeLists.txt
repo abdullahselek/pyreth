@@ -26,6 +26,7 @@ include(cmake/OnnxRuntime.cmake)
 add_library(EngineCore STATIC
     src/core/pyreth.cpp
     src/core/backend.cpp
+    src/core/thread_pool.cpp
 )
 
 set_target_properties(EngineCore PROPERTIES
@@ -78,6 +79,7 @@ if(BUILD_TESTING)
   FetchContent_Declare(
     googletest
     URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
+    SYSTEM
   )
 
   # Cross-platform knobs: build GTest against a shared CRT on Windows and do
@@ -90,6 +92,17 @@ if(BUILD_TESTING)
   if(NOT TARGET gtest)
     FetchContent_MakeAvailable(googletest)
   endif()
+
+  # Suppress compiler warnings from GoogleTest internal sources
+  foreach(_tgt IN ITEMS gtest gmock gtest_main gmock_main)
+    if(TARGET ${_tgt})
+      if(MSVC)
+        target_compile_options(${_tgt} PRIVATE /w)
+      else()
+        target_compile_options(${_tgt} PRIVATE -w)
+      endif()
+    endif()
+  endforeach()
 
   add_subdirectory(unittest)
 endif()
