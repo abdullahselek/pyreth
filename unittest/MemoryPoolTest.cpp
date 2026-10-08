@@ -273,12 +273,12 @@ TEST(MemoryPoolTest, BenchmarkAllocationSpeedAgainstMallocAndPmr) {
   auto dur_pmr = std::chrono::steady_clock::now() - start_pmr;
   auto ms_pmr = std::chrono::duration_cast<std::chrono::microseconds>(dur_pmr).count();
 
-  std::cout << "[MemoryBenchmark " << NUM_ALLOCS << " allocs (" << ALLOC_SIZE << " B)]"
-            << "\n  ArenaAllocator: " << ms_arena / 1000.0 << " ms"
-            << "\n  std::malloc:    " << ms_malloc / 1000.0 << " ms"
-            << "\n  std::pmr:       " << ms_pmr / 1000.0 << " ms"
-            << "\n  Speedup vs malloc: "
-            << static_cast<double>(ms_malloc) / static_cast<double>(ms_arena) << "x" << std::endl;
+  const double speedup = static_cast<double>(ms_malloc) / static_cast<double>(ms_arena);
+  std::cout << "[MemoryBenchmark " << NUM_ALLOCS << " allocs (" << ALLOC_SIZE << " B)]\n";
+  std::cout << "  ArenaAllocator:    " << ms_arena / 1000.0 << " ms\n";
+  std::cout << "  std::malloc:       " << ms_malloc / 1000.0 << " ms\n";
+  std::cout << "  std::pmr:          " << ms_pmr / 1000.0 << " ms\n";
+  std::cout << "  Speedup vs malloc: " << speedup << "x\n";
 
   EXPECT_LT(ms_arena, ms_malloc) << "ArenaAllocator should be strictly faster than std::malloc";
 }

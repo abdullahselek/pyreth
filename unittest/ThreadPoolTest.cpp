@@ -164,12 +164,10 @@ TEST(ThreadPoolTest, Throughput100kTasksAndLatencyDistribution) {
   uint64_t p90 = latencies_us[NUM_TASKS * 90 / 100];
   uint64_t p99 = latencies_us[NUM_TASKS * 99 / 100];
 
-  std::cout << "[Throughput100k] Total Time: " << total_ms << " ms"
-            << " | Throughput: " << (total_ms > 0 ? (NUM_TASKS * 1000 / total_ms) : 0)
-            << " tasks/sec"
-            << " | P50: " << p50 << " us"
-            << " | P90: " << p90 << " us"
-            << " | P99: " << p99 << " us" << std::endl;
+  const uint64_t throughput = total_ms > 0 ? (NUM_TASKS * 1000 / total_ms) : 0;
+  std::cout << "[Throughput100k] Total Time: " << total_ms << " ms\n";
+  std::cout << "  Throughput: " << throughput << " tasks/sec\n";
+  std::cout << "  Latency: P50=" << p50 << "us, P90=" << p90 << "us, P99=" << p99 << "us\n";
 
   auto metrics = pool.metrics();
   EXPECT_EQ(metrics.tasks_executed, NUM_TASKS);

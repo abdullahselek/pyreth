@@ -112,11 +112,52 @@ uv run pytest
 uv run python -c "import pyreth; print('Version:', pyreth.__version__, '| Best Backend:', pyreth.get_best_backend())"
 ```
 
-### 4. Linting & Formatting
+## Code Style & Formatting
 
-```sh
-uv run ruff check .
-```
+Repository standards are enforced automatically in CI on every push and pull request via the `standards` job before running build/test workflows.
+
+### C++ (`clang-format` & `clang-tidy`)
+
+C++ formatting is governed by [`.clang-format`](.clang-format) based on Google C++20 conventions (2-space indent, 100-character line limit, left pointer alignment `Type* ptr`, strict control-statement braces).
+
+- **Check formatting (dry run, matches CI)**:
+  ```sh
+  find include src unittest sandbox python \( -name '*.hpp' -o -name '*.cpp' \) -print0 | xargs -0 clang-format --dry-run --Werror
+  ```
+
+- **Format in-place**:
+  ```sh
+  # Format all C++ files across the codebase
+  find include src unittest sandbox python \( -name '*.hpp' -o -name '*.cpp' \) -print0 | xargs -0 clang-format -i
+
+  # Format an individual file
+  clang-format -i include/pyreth/thread_pool.hpp
+  ```
+
+- **Linting (`clang-tidy`)**:
+  Static analysis checks and naming conventions are configured in [`.clang-tidy`](.clang-tidy). Generate the compile commands database with CMake first:
+  ```sh
+  cmake -B build -S . -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+  clang-tidy src/core/thread_pool.cpp -p build
+  ```
+
+> **Editor / IDE Support**: If you use Neovim / LazyVim (with `conform.nvim` or `clangd`), VS Code, or CLion, the editor will automatically discover and apply [`.clang-format`](.clang-format) upon saving.
+
+### Python (`ruff`)
+
+Python code formatting and linting are managed using [Ruff](https://docs.astral.sh/ruff/) via `uv`:
+
+- **Check linting and formatting**:
+  ```sh
+  uv run ruff check .
+  uv run ruff format --check .
+  ```
+
+- **Auto-format and fix**:
+  ```sh
+  uv run ruff format .
+  uv run ruff check --fix .
+  ```
 
 ## License
 
