@@ -2,10 +2,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <pyreth/worker_parker.hpp>
 #include <thread>
 #include <vector>
-
-#include <pyreth/worker_parker.hpp>
 
 using namespace std::chrono_literals;
 
@@ -128,9 +127,7 @@ TEST(WorkerParkerTest, AtomicNotificationSingleAndBroadcast) {
   EXPECT_EQ(notifier.get(), 0u);
 
   // Single notification
-  std::thread t1([&]() {
-    notifier.wait(0u);
-  });
+  std::thread t1([&]() { notifier.wait(0u); });
 
   std::this_thread::sleep_for(10ms);
   notifier.notifyOne();

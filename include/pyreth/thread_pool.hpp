@@ -9,17 +9,16 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <pyreth/common.hpp>
+#include <pyreth/result.hpp>
+#include <pyreth/work_stealing_queue.hpp>
+#include <pyreth/worker_parker.hpp>
 #include <queue>
 #include <stop_token>
 #include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
-
-#include <pyreth/common.hpp>
-#include <pyreth/result.hpp>
-#include <pyreth/work_stealing_queue.hpp>
-#include <pyreth/worker_parker.hpp>
 
 namespace pyreth {
 
@@ -38,45 +37,41 @@ public:
   MoveOnlyTask() noexcept = default;
 
   template <typename F>
-    requires(!std::is_same_v<std::decay_t<F>, MoveOnlyTask> &&
-             std::is_invocable_v<F>)
-  MoveOnlyTask(F &&f) {
+    requires(!std::is_same_v<std::decay_t<F>, MoveOnlyTask> && std::is_invocable_v<F>)
+  MoveOnlyTask(F&& f) {
     using Decayed = std::decay_t<F>;
     if constexpr (sizeof(Decayed) <= INLINE_CAPACITY &&
                   alignof(Decayed) <= alignof(std::max_align_t)) {
       new (storage_) Decayed(std::forward<F>(f));
-      invoker_ = [](void *s) { (*reinterpret_cast<Decayed *>(s))(); };
-      destroyer_ = [](void *s) { reinterpret_cast<Decayed *>(s)->~Decayed(); };
-      mover_ = [](void *src, void *dest) noexcept {
-        new (dest) Decayed(std::move(*reinterpret_cast<Decayed *>(src)));
-        reinterpret_cast<Decayed *>(src)->~Decayed();
+      invoker_ = [](void* s) { (*reinterpret_cast<Decayed*>(s))(); };
+      destroyer_ = [](void* s) { reinterpret_cast<Decayed*>(s)->~Decayed(); };
+      mover_ = [](void* src, void* dest) noexcept {
+        new (dest) Decayed(std::move(*reinterpret_cast<Decayed*>(src)));
+        reinterpret_cast<Decayed*>(src)->~Decayed();
       };
     } else {
       auto ptr = std::make_unique<Decayed>(std::forward<F>(f));
       new (storage_) std::unique_ptr<Decayed>(std::move(ptr));
-      invoker_ = [](void *s) {
-        (**reinterpret_cast<std::unique_ptr<Decayed> *>(s))();
+      invoker_ = [](void* s) { (**reinterpret_cast<std::unique_ptr<Decayed>*>(s))(); };
+      destroyer_ = [](void* s) {
+        reinterpret_cast<std::unique_ptr<Decayed>*>(s)->~unique_ptr<Decayed>();
       };
-      destroyer_ = [](void *s) {
-        reinterpret_cast<std::unique_ptr<Decayed> *>(s)->~unique_ptr<Decayed>();
-      };
-      mover_ = [](void *src, void *dest) noexcept {
-        new (dest) std::unique_ptr<Decayed>(
-            std::move(*reinterpret_cast<std::unique_ptr<Decayed> *>(src)));
-        reinterpret_cast<std::unique_ptr<Decayed> *>(src)
-            ->~unique_ptr<Decayed>();
+      mover_ = [](void* src, void* dest) noexcept {
+        new (dest)
+            std::unique_ptr<Decayed>(std::move(*reinterpret_cast<std::unique_ptr<Decayed>*>(src)));
+        reinterpret_cast<std::unique_ptr<Decayed>*>(src)->~unique_ptr<Decayed>();
       };
     }
   }
 
   ~MoveOnlyTask() { reset(); }
 
-  MoveOnlyTask(const MoveOnlyTask &) = delete;
-  MoveOnlyTask &operator=(const MoveOnlyTask &) = delete;
+  MoveOnlyTask(const MoveOnlyTask&) = delete;
+  MoveOnlyTask& operator=(const MoveOnlyTask&) = delete;
 
-  MoveOnlyTask(MoveOnlyTask &&other) noexcept { moveFrom(std::move(other)); }
+  MoveOnlyTask(MoveOnlyTask&& other) noexcept { moveFrom(std::move(other)); }
 
-  MoveOnlyTask &operator=(MoveOnlyTask &&other) noexcept {
+  MoveOnlyTask& operator=(MoveOnlyTask&& other) noexcept {
     if (this != &other) {
       reset();
       moveFrom(std::move(other));
@@ -91,9 +86,7 @@ public:
     }
   }
 
-  [[nodiscard]] explicit operator bool() const noexcept {
-    return invoker_ != nullptr;
-  }
+  [[nodiscard]] explicit operator bool() const noexcept { return invoker_ != nullptr; }
 
   void reset() noexcept {
     if (destroyer_) {
@@ -105,7 +98,7 @@ public:
   }
 
 private:
-  void moveFrom(MoveOnlyTask &&other) noexcept {
+  void moveFrom(MoveOnlyTask&& other) noexcept {
     if (other.mover_) {
       other.mover_(other.storage_, storage_);
       invoker_ = other.invoker_;
@@ -117,9 +110,9 @@ private:
     }
   }
 
-  using InvokerFn = void (*)(void *storage);
-  using DestroyerFn = void (*)(void *storage);
-  using MoverFn = void (*)(void *src, void *dest) noexcept;
+  using InvokerFn = void (*)(void* storage);
+  using DestroyerFn = void (*)(void* storage);
+  using MoverFn = void (*)(void* src, void* dest) noexcept;
 
   InvokerFn invoker_{nullptr};
   DestroyerFn destroyer_{nullptr};
@@ -133,22 +126,23 @@ private:
  *
  * @tparam R Return type of the submitted task.
  */
-template <typename R> class TaskHandle {
+template <typename R>
+class TaskHandle {
 public:
   TaskHandle() = default;
   explicit TaskHandle(std::future<R> fut) : future_(std::move(fut)) {}
 
-  TaskHandle(TaskHandle &&) noexcept = default;
-  TaskHandle &operator=(TaskHandle &&) noexcept = default;
+  TaskHandle(TaskHandle&&) noexcept = default;
+  TaskHandle& operator=(TaskHandle&&) noexcept = default;
 
-  TaskHandle(const TaskHandle &) = delete;
-  TaskHandle &operator=(const TaskHandle &) = delete;
+  TaskHandle(const TaskHandle&) = delete;
+  TaskHandle& operator=(const TaskHandle&) = delete;
 
   [[nodiscard]] bool valid() const noexcept { return future_.valid(); }
 
   [[nodiscard]] bool isReady() const noexcept {
-    return future_.valid() && future_.wait_for(std::chrono::seconds(0)) ==
-                                  std::future_status::ready;
+    return future_.valid() &&
+           future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
   }
 
   void wait() const {
@@ -158,8 +152,7 @@ public:
   }
 
   template <typename Rep, typename Period>
-  [[nodiscard]] bool
-  waitFor(const std::chrono::duration<Rep, Period> &duration) const {
+  [[nodiscard]] bool waitFor(const std::chrono::duration<Rep, Period>& duration) const {
     if (!future_.valid()) {
       return false;
     }
@@ -175,22 +168,23 @@ private:
 /**
  * @brief Specialization of TaskHandle for void-returning tasks.
  */
-template <> class TaskHandle<void> {
+template <>
+class TaskHandle<void> {
 public:
   TaskHandle() = default;
   explicit TaskHandle(std::future<void> fut) : future_(std::move(fut)) {}
 
-  TaskHandle(TaskHandle &&) noexcept = default;
-  TaskHandle &operator=(TaskHandle &&) noexcept = default;
+  TaskHandle(TaskHandle&&) noexcept = default;
+  TaskHandle& operator=(TaskHandle&&) noexcept = default;
 
-  TaskHandle(const TaskHandle &) = delete;
-  TaskHandle &operator=(const TaskHandle &) = delete;
+  TaskHandle(const TaskHandle&) = delete;
+  TaskHandle& operator=(const TaskHandle&) = delete;
 
   [[nodiscard]] bool valid() const noexcept { return future_.valid(); }
 
   [[nodiscard]] bool isReady() const noexcept {
-    return future_.valid() && future_.wait_for(std::chrono::seconds(0)) ==
-                                  std::future_status::ready;
+    return future_.valid() &&
+           future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
   }
 
   void wait() const {
@@ -200,8 +194,7 @@ public:
   }
 
   template <typename Rep, typename Period>
-  [[nodiscard]] bool
-  waitFor(const std::chrono::duration<Rep, Period> &duration) const {
+  [[nodiscard]] bool waitFor(const std::chrono::duration<Rep, Period>& duration) const {
     if (!future_.valid()) {
       return false;
     }
@@ -230,10 +223,9 @@ struct ThreadBudget {
  * @brief Configuration parameters for ThreadPool creation.
  */
 struct ThreadPoolConfig {
-  size_t num_threads{0};       ///< 0 = auto-detect hardware concurrency
-  size_t queue_capacity{1024}; ///< Local queue capacity per worker
-  size_t reserve_threads_for_ort{
-      1}; ///< Cores budgeted for ONNX Runtime intra-op
+  size_t num_threads{0};              ///< 0 = auto-detect hardware concurrency
+  size_t queue_capacity{1024};        ///< Local queue capacity per worker
+  size_t reserve_threads_for_ort{1};  ///< Cores budgeted for ONNX Runtime intra-op
 };
 
 /**
@@ -271,17 +263,17 @@ public:
    *
    * @param config Configuration parameters.
    */
-  explicit ThreadPool(const ThreadPoolConfig &config);
+  explicit ThreadPool(const ThreadPoolConfig& config);
 
   /**
    * @brief Destructor. Cooperatively signals shutdown and joins all workers.
    */
   ~ThreadPool();
 
-  ThreadPool(const ThreadPool &) = delete;
-  ThreadPool &operator=(const ThreadPool &) = delete;
-  ThreadPool(ThreadPool &&) = delete;
-  ThreadPool &operator=(ThreadPool &&) = delete;
+  ThreadPool(const ThreadPool&) = delete;
+  ThreadPool& operator=(const ThreadPool&) = delete;
+  ThreadPool(ThreadPool&&) = delete;
+  ThreadPool& operator=(ThreadPool&&) = delete;
 
   /**
    * @brief Submit a callable task returning a Result<TaskHandle<R>>.
@@ -293,35 +285,31 @@ public:
    * @return Result containing TaskHandle on success, or Error if shutdown/full.
    */
   template <typename F, typename... Args>
-  auto submit(F &&f, Args &&...args) -> Result<TaskHandle<
-      std::invoke_result_t<std::decay_t<F>, std::decay_t<Args>...>>> {
-    using ReturnType =
-        std::invoke_result_t<std::decay_t<F>, std::decay_t<Args>...>;
+  auto submit(F&& f, Args&&... args)
+      -> Result<TaskHandle<std::invoke_result_t<std::decay_t<F>, std::decay_t<Args>...>>> {
+    using ReturnType = std::invoke_result_t<std::decay_t<F>, std::decay_t<Args>...>;
 
     if (isShutdown()) {
-      return Result<TaskHandle<ReturnType>>::failure(
-          StatusCode::INTERNAL_ERROR, "ThreadPool has been shut down");
+      return Result<TaskHandle<ReturnType>>::failure(StatusCode::INTERNAL_ERROR,
+                                                     "ThreadPool has been shut down");
     }
 
     auto bound = [func = std::forward<F>(f),
-                  ... captured_args =
-                      std::forward<Args>(args)]() mutable -> ReturnType {
+                  ... captured_args = std::forward<Args>(args)]() mutable -> ReturnType {
       return std::invoke(func, std::move(captured_args)...);
     };
 
-    auto ptask =
-        std::make_shared<std::packaged_task<ReturnType()>>(std::move(bound));
+    auto ptask = std::make_shared<std::packaged_task<ReturnType()>>(std::move(bound));
     auto fut = ptask->get_future();
 
     MoveOnlyTask task([ptask]() { (*ptask)(); });
 
     if (!pushTask(std::move(task))) {
-      return Result<TaskHandle<ReturnType>>::failure(
-          StatusCode::QUEUE_FULL, "ThreadPool task queue is full");
+      return Result<TaskHandle<ReturnType>>::failure(StatusCode::QUEUE_FULL,
+                                                     "ThreadPool task queue is full");
     }
 
-    return Result<TaskHandle<ReturnType>>::success(
-        TaskHandle<ReturnType>(std::move(fut)));
+    return Result<TaskHandle<ReturnType>>::success(TaskHandle<ReturnType>(std::move(fut)));
   }
 
   /**
@@ -330,7 +318,8 @@ public:
    * @param f Callable to execute.
    * @return Status::ok() on success, or error on failure.
    */
-  template <typename F> Status submitDetached(F &&f) {
+  template <typename F>
+  Status submitDetached(F&& f) {
     if (isShutdown()) {
       return Error(StatusCode::INTERNAL_ERROR, "ThreadPool has been shut down");
     }
@@ -371,8 +360,7 @@ public:
    * threads.
    * @return Partitioned ThreadBudget.
    */
-  [[nodiscard]] static ThreadBudget
-  computeThreadBudget(size_t reserved_for_ort = 1) noexcept;
+  [[nodiscard]] static ThreadBudget computeThreadBudget(size_t reserved_for_ort = 1) noexcept;
 
 private:
   bool pushTask(MoveOnlyTask task);
@@ -392,4 +380,4 @@ private:
   std::queue<MoveOnlyTask> injection_queue_;
 };
 
-} // namespace pyreth
+}  // namespace pyreth

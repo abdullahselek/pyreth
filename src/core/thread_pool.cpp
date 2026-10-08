@@ -1,7 +1,6 @@
-#include <pyreth/thread_pool.hpp>
-
 #include <algorithm>
 #include <chrono>
+#include <pyreth/thread_pool.hpp>
 
 namespace pyreth {
 
@@ -13,7 +12,7 @@ struct WorkerData {
   std::atomic<uint64_t> tasks_stolen{0};
 };
 
-static thread_local WorkerData *t_current_worker = nullptr;
+static thread_local WorkerData* t_current_worker = nullptr;
 
 ThreadPool::ThreadPool(size_t num_threads)
     : ThreadPool([num_threads]() {
@@ -22,7 +21,7 @@ ThreadPool::ThreadPool(size_t num_threads)
         return config;
       }()) {}
 
-ThreadPool::ThreadPool(const ThreadPoolConfig &config) {
+ThreadPool::ThreadPool(const ThreadPoolConfig& config) {
   size_t count = config.num_threads;
   if (count == 0) {
     auto budget = computeThreadBudget(config.reserve_threads_for_ort);
@@ -45,18 +44,20 @@ ThreadPool::ThreadPool(const ThreadPoolConfig &config) {
   }
 }
 
-ThreadPool::~ThreadPool() { shutdown(); }
+ThreadPool::~ThreadPool() {
+  shutdown();
+}
 
 void ThreadPool::shutdown() noexcept {
   if (shutdown_.exchange(true, std::memory_order_release)) {
     return;
   }
 
-  for (auto &w : workers_) {
+  for (auto& w : workers_) {
     w.request_stop();
   }
 
-  for (auto &wd : workers_data_) {
+  for (auto& wd : workers_data_) {
     wd->parker.unpark();
   }
 
@@ -68,13 +69,15 @@ bool ThreadPool::isShutdown() const noexcept {
   return shutdown_.load(std::memory_order_acquire);
 }
 
-size_t ThreadPool::numWorkers() const noexcept { return workers_data_.size(); }
+size_t ThreadPool::numWorkers() const noexcept {
+  return workers_data_.size();
+}
 
 ThreadPoolMetrics ThreadPool::metrics() const noexcept {
   ThreadPoolMetrics m;
   m.tasks_submitted = tasks_submitted_.load(std::memory_order_relaxed);
 
-  for (const auto &wd : workers_data_) {
+  for (const auto& wd : workers_data_) {
     m.tasks_executed += wd->tasks_executed.load(std::memory_order_relaxed);
     m.tasks_stolen += wd->tasks_stolen.load(std::memory_order_relaxed);
   }
@@ -127,8 +130,7 @@ void ThreadPool::notifyOneWorker() noexcept {
   if (workers_data_.empty()) {
     return;
   }
-  size_t idx = next_unpark_idx_.fetch_add(1, std::memory_order_relaxed) %
-               workers_data_.size();
+  size_t idx = next_unpark_idx_.fetch_add(1, std::memory_order_relaxed) % workers_data_.size();
   workers_data_[idx]->parker.unpark();
 }
 
@@ -155,8 +157,7 @@ std::optional<MoveOnlyTask> ThreadPool::findTask(size_t worker_id) {
     size_t victim = (worker_id + i) % n;
     auto stolen = workers_data_[victim]->queue.steal();
     if (stolen) {
-      workers_data_[worker_id]->tasks_stolen.fetch_add(
-          1, std::memory_order_relaxed);
+      workers_data_[worker_id]->tasks_stolen.fetch_add(1, std::memory_order_relaxed);
       return stolen;
     }
   }
@@ -181,8 +182,7 @@ void ThreadPool::workerLoop(size_t worker_id, std::stop_token stop_token) {
     auto task = findTask(worker_id);
     if (task) {
       (*task)();
-      workers_data_[worker_id]->tasks_executed.fetch_add(
-          1, std::memory_order_relaxed);
+      workers_data_[worker_id]->tasks_executed.fetch_add(1, std::memory_order_relaxed);
     } else {
       if (stop_token.stop_requested()) {
         break;
@@ -195,11 +195,10 @@ void ThreadPool::workerLoop(size_t worker_id, std::stop_token stop_token) {
   // Drain remaining tasks during shutdown
   while (auto task = findTask(worker_id)) {
     (*task)();
-    workers_data_[worker_id]->tasks_executed.fetch_add(
-        1, std::memory_order_relaxed);
+    workers_data_[worker_id]->tasks_executed.fetch_add(1, std::memory_order_relaxed);
   }
 
   t_current_worker = nullptr;
 }
 
-} // namespace pyreth
+}  // namespace pyreth

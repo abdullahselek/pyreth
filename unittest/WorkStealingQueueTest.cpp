@@ -1,11 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <pyreth/work_stealing_queue.hpp>
 #include <string>
 #include <thread>
 #include <vector>
-
-#include <pyreth/work_stealing_queue.hpp>
 
 namespace {
 
@@ -13,20 +12,18 @@ struct DestructorTracker {
   static std::atomic<int> alive_count;
   int id{0};
 
-  explicit DestructorTracker(int i) : id(i) {
+  explicit DestructorTracker(int i) : id(i) { alive_count.fetch_add(1, std::memory_order_relaxed); }
+
+  DestructorTracker(const DestructorTracker& other) : id(other.id) {
     alive_count.fetch_add(1, std::memory_order_relaxed);
   }
 
-  DestructorTracker(const DestructorTracker &other) : id(other.id) {
+  DestructorTracker(DestructorTracker&& other) noexcept : id(other.id) {
     alive_count.fetch_add(1, std::memory_order_relaxed);
   }
 
-  DestructorTracker(DestructorTracker &&other) noexcept : id(other.id) {
-    alive_count.fetch_add(1, std::memory_order_relaxed);
-  }
-
-  DestructorTracker &operator=(const DestructorTracker &) = default;
-  DestructorTracker &operator=(DestructorTracker &&) noexcept = default;
+  DestructorTracker& operator=(const DestructorTracker&) = default;
+  DestructorTracker& operator=(DestructorTracker&&) noexcept = default;
 
   ~DestructorTracker() { alive_count.fetch_sub(1, std::memory_order_relaxed); }
 };
@@ -38,13 +35,13 @@ struct MoveOnlyPayload {
   std::string name;
 
   MoveOnlyPayload(int v, std::string n) : value(v), name(std::move(n)) {}
-  MoveOnlyPayload(const MoveOnlyPayload &) = delete;
-  MoveOnlyPayload &operator=(const MoveOnlyPayload &) = delete;
-  MoveOnlyPayload(MoveOnlyPayload &&) noexcept = default;
-  MoveOnlyPayload &operator=(MoveOnlyPayload &&) noexcept = default;
+  MoveOnlyPayload(const MoveOnlyPayload&) = delete;
+  MoveOnlyPayload& operator=(const MoveOnlyPayload&) = delete;
+  MoveOnlyPayload(MoveOnlyPayload&&) noexcept = default;
+  MoveOnlyPayload& operator=(MoveOnlyPayload&&) noexcept = default;
 };
 
-} // namespace
+}  // namespace
 
 TEST(WorkStealingQueueTest, SingleThreadedPushPopLIFO) {
   pyreth::WorkStealingQueue<int, 8> queue;
@@ -288,7 +285,7 @@ TEST(WorkStealingQueueTest, MultiThreadedStealStress) {
 
   producer_done.store(true, std::memory_order_release);
 
-  for (auto &thief : thieves) {
+  for (auto& thief : thieves) {
     thief.join();
   }
 
@@ -297,7 +294,6 @@ TEST(WorkStealingQueueTest, MultiThreadedStealStress) {
 
   // Verify that every single item was processed exactly once
   for (int i = 0; i < NUM_ITEMS; ++i) {
-    EXPECT_EQ(received_tracker[i].load(), 1)
-        << "Item " << i << " was not processed exactly once";
+    EXPECT_EQ(received_tracker[i].load(), 1) << "Item " << i << " was not processed exactly once";
   }
 }

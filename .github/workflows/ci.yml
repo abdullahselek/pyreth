@@ -13,8 +13,30 @@ on:
   workflow_dispatch:
 
 jobs:
+  standards:
+    name: Formatting & Linting Standards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check C++ code formatting (clang-format)
+        run: |
+          clang-format --version
+          find include src unittest sandbox python \( -name '*.hpp' -o -name '*.cpp' \) -print0 | xargs -0 clang-format --dry-run --Werror
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Check Python formatting & linting (ruff)
+        run: |
+          uv sync
+          uv run ruff check .
+          uv run ruff format --check .
+
   test:
     name: Build & test (${{ matrix.os }})
+    needs: [standards]
     runs-on: ${{ matrix.os }}
     strategy:
       # Keep going if one OS fails, so we get signal from all three in one run.

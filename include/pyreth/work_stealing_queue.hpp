@@ -5,9 +5,8 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <utility>
-
 #include <pyreth/common.hpp>
+#include <utility>
 
 namespace pyreth {
 
@@ -39,10 +38,10 @@ namespace pyreth {
  * @tparam Capacity Power-of-two capacity of the circular buffer (default:
  * 1024).
  */
-template <typename T, size_t Capacity = 1024> class WorkStealingQueue {
+template <typename T, size_t Capacity = 1024>
+class WorkStealingQueue {
   static_assert(Capacity > 0, "Capacity must be greater than zero");
-  static_assert((Capacity & (Capacity - 1)) == 0,
-                "Capacity must be a power of two");
+  static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be a power of two");
 
   static constexpr int64_t MASK = static_cast<int64_t>(Capacity - 1);
 
@@ -59,10 +58,10 @@ public:
   ~WorkStealingQueue() { clear(); }
 
   // Non-copyable and non-movable (pinned concurrent data structure)
-  WorkStealingQueue(const WorkStealingQueue &) = delete;
-  WorkStealingQueue &operator=(const WorkStealingQueue &) = delete;
-  WorkStealingQueue(WorkStealingQueue &&) = delete;
-  WorkStealingQueue &operator=(WorkStealingQueue &&) = delete;
+  WorkStealingQueue(const WorkStealingQueue&) = delete;
+  WorkStealingQueue& operator=(const WorkStealingQueue&) = delete;
+  WorkStealingQueue(WorkStealingQueue&&) = delete;
+  WorkStealingQueue& operator=(WorkStealingQueue&&) = delete;
 
   /**
    * @brief Push an item onto the bottom of the deque (Producer/Owner only).
@@ -70,7 +69,7 @@ public:
    * @param item Value or rvalue to push.
    * @return true if pushed successfully; false if queue is full.
    */
-  bool push(const T &item) { return emplace(item); }
+  bool push(const T& item) { return emplace(item); }
 
   /**
    * @brief Push an rvalue item onto the bottom of the deque (Producer/Owner
@@ -79,7 +78,7 @@ public:
    * @param item Rvalue to move into the queue.
    * @return true if pushed successfully; false if queue is full.
    */
-  bool push(T &&item) { return emplace(std::move(item)); }
+  bool push(T&& item) { return emplace(std::move(item)); }
 
   /**
    * @brief Emplace an item onto the bottom of the deque (Producer/Owner only).
@@ -88,19 +87,20 @@ public:
    * @param args Arguments forwarded to T's constructor.
    * @return true if pushed successfully; false if queue is full.
    */
-  template <typename... Args> bool emplace(Args &&...args) {
+  template <typename... Args>
+  bool emplace(Args&&... args) {
     int64_t b = bottom_.load(std::memory_order_relaxed);
     int64_t t = top_.load(std::memory_order_acquire);
 
     if (b - t >= static_cast<int64_t>(Capacity)) {
-      return false; // Queue is full
+      return false;  // Queue is full
     }
 
-    Slot &slot = buffer_[static_cast<size_t>(b) & static_cast<size_t>(MASK)];
+    Slot& slot = buffer_[static_cast<size_t>(b) & static_cast<size_t>(MASK)];
 
     // Wraparound safety check: verify slot was emptied by previous thief/pop
     if (slot.ready.load(std::memory_order_acquire)) {
-      return false; // Slot still held by an active thief
+      return false;  // Slot still held by an active thief
     }
 
     slot.item.emplace(std::forward<Args>(args)...);
@@ -142,7 +142,7 @@ public:
         bottom_.store(b + 1, std::memory_order_relaxed);
       }
 
-      Slot &slot = buffer_[static_cast<size_t>(b) & static_cast<size_t>(MASK)];
+      Slot& slot = buffer_[static_cast<size_t>(b) & static_cast<size_t>(MASK)];
       T val = std::move(*slot.item);
       slot.item.reset();
       slot.ready.store(false, std::memory_order_release);
@@ -167,12 +167,12 @@ public:
     int64_t b = bottom_.load(std::memory_order_acquire);
 
     if (t < b) {
-      Slot &slot = buffer_[static_cast<size_t>(t) & static_cast<size_t>(MASK)];
+      Slot& slot = buffer_[static_cast<size_t>(t) & static_cast<size_t>(MASK)];
 
       // Compete with other thieves and owner pop
       if (!top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst,
                                         std::memory_order_relaxed)) {
-        return std::nullopt; // Contention lost
+        return std::nullopt;  // Contention lost
       }
 
       // Winning thief extracts the item
@@ -242,4 +242,4 @@ private:
   alignas(64) std::unique_ptr<Slot[]> buffer_;
 };
 
-} // namespace pyreth
+}  // namespace pyreth

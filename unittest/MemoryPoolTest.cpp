@@ -4,11 +4,10 @@
 #include <cstdint>
 #include <cstring>
 #include <memory_resource>
+#include <pyreth/memory_pool.hpp>
 #include <string>
 #include <thread>
 #include <vector>
-
-#include <pyreth/memory_pool.hpp>
 
 TEST(MemoryPoolTest, AlignmentVerificationAcrossSizes) {
   pyreth::ArenaAllocator arena(1024 * 64);
@@ -18,10 +17,9 @@ TEST(MemoryPoolTest, AlignmentVerificationAcrossSizes) {
                                64, 127, 128, 255, 256, 1023, 1024, 4096, 16384};
 
   for (size_t size : test_sizes) {
-    void *ptr = arena.allocate(size);
+    void* ptr = arena.allocate(size);
     ASSERT_NE(ptr, nullptr);
-    EXPECT_EQ(reinterpret_cast<uintptr_t>(ptr) % 64, 0u)
-        << "Failed for allocation size: " << size;
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(ptr) % 64, 0u) << "Failed for allocation size: " << size;
   }
 }
 
@@ -30,7 +28,7 @@ TEST(MemoryPoolTest, MonadicTryAllocate) {
 
   auto res = arena.tryAllocate(512);
   ASSERT_TRUE(res.isOk());
-  void *ptr = res.value();
+  void* ptr = res.value();
   ASSERT_NE(ptr, nullptr);
   EXPECT_EQ(reinterpret_cast<uintptr_t>(ptr) % 64, 0u);
 }
@@ -40,11 +38,11 @@ TEST(MemoryPoolTest, ConsecutiveAllocationsNoOverlap) {
   constexpr size_t NUM_BUFFERS = 32;
   constexpr size_t BUFFER_SIZE = 128;
 
-  std::vector<uint8_t *> buffers;
+  std::vector<uint8_t*> buffers;
   buffers.reserve(NUM_BUFFERS);
 
   for (size_t i = 0; i < NUM_BUFFERS; ++i) {
-    auto *buf = static_cast<uint8_t *>(arena.allocate(BUFFER_SIZE));
+    auto* buf = static_cast<uint8_t*>(arena.allocate(BUFFER_SIZE));
     ASSERT_EQ(reinterpret_cast<uintptr_t>(buf) % 64, 0u);
     std::memset(buf, static_cast<int>(i + 1), BUFFER_SIZE);
     buffers.push_back(buf);
@@ -67,7 +65,7 @@ TEST(MemoryPoolTest, TypedCreateAndAllocateArray) {
     float z;
   };
 
-  Point *p = arena.create<Point>(1.0f, 2.0f, 3.0f);
+  Point* p = arena.create<Point>(1.0f, 2.0f, 3.0f);
   ASSERT_NE(p, nullptr);
   EXPECT_EQ(reinterpret_cast<uintptr_t>(p) % 64, 0u);
   EXPECT_FLOAT_EQ(p->x, 1.0f);
@@ -75,7 +73,7 @@ TEST(MemoryPoolTest, TypedCreateAndAllocateArray) {
   EXPECT_FLOAT_EQ(p->z, 3.0f);
 
   constexpr size_t ARRAY_LEN = 256;
-  float *arr = arena.allocateArray<float>(ARRAY_LEN);
+  float* arr = arena.allocateArray<float>(ARRAY_LEN);
   ASSERT_NE(arr, nullptr);
   EXPECT_EQ(reinterpret_cast<uintptr_t>(arr) % 64, 0u);
 
@@ -93,16 +91,16 @@ TEST(MemoryPoolTest, BlockChainingAndLargeAllocations) {
   EXPECT_EQ(arena.blockCount(), 1u);
 
   // Allocate 10 KB (fits in block 1)
-  void *p1 = arena.allocate(10 * 1024);
+  void* p1 = arena.allocate(10 * 1024);
   EXPECT_EQ(reinterpret_cast<uintptr_t>(p1) % 64, 0u);
 
   // Allocate another 10 KB (exceeds block 1, forces block 2)
-  void *p2 = arena.allocate(10 * 1024);
+  void* p2 = arena.allocate(10 * 1024);
   EXPECT_EQ(reinterpret_cast<uintptr_t>(p2) % 64, 0u);
   EXPECT_GE(arena.blockCount(), 2u);
 
   // Allocate a 128 KB buffer (exceeds default block size, creates large block)
-  void *p3 = arena.allocate(128 * 1024);
+  void* p3 = arena.allocate(128 * 1024);
   EXPECT_EQ(reinterpret_cast<uintptr_t>(p3) % 64, 0u);
   EXPECT_GE(arena.blockCount(), 3u);
 }
@@ -127,7 +125,7 @@ TEST(MemoryPoolTest, O1ResetAndBlockReuse) {
 
   // Re-allocate across the existing blocks
   for (int i = 0; i < 5; ++i) {
-    void *ptr = arena.allocate(12 * 1024);
+    void* ptr = arena.allocate(12 * 1024);
     EXPECT_EQ(reinterpret_cast<uintptr_t>(ptr) % 64, 0u);
   }
 
@@ -160,7 +158,7 @@ TEST(MemoryPoolTest, ThreadLocalArenaIsolation) {
 
   for (int t = 0; t < NUM_THREADS; ++t) {
     threads.emplace_back([t, &arena_addrs, &ready, &start_gate]() {
-      auto &arena = pyreth::MemoryPool::getThreadLocalArena();
+      auto& arena = pyreth::MemoryPool::getThreadLocalArena();
       arena_addrs[t] = reinterpret_cast<uintptr_t>(&arena);
 
       ready.fetch_add(1, std::memory_order_release);
@@ -169,7 +167,7 @@ TEST(MemoryPoolTest, ThreadLocalArenaIsolation) {
       }
 
       for (int i = 0; i < 100; ++i) {
-        void *p = arena.allocate(128);
+        void* p = arena.allocate(128);
         EXPECT_EQ(reinterpret_cast<uintptr_t>(p) % 64, 0u);
       }
       arena.reset();
@@ -181,7 +179,7 @@ TEST(MemoryPoolTest, ThreadLocalArenaIsolation) {
   }
   start_gate.store(true, std::memory_order_release);
 
-  for (auto &t : threads) {
+  for (auto& t : threads) {
     t.join();
   }
 
@@ -203,7 +201,7 @@ TEST(MemoryPoolTest, MemoryPoolLeaseLifecycle) {
     EXPECT_TRUE(lease1.valid());
     EXPECT_EQ(pool.availableCount(), 1u);
 
-    void *p = lease1->allocate(512);
+    void* p = lease1->allocate(512);
     EXPECT_EQ(reinterpret_cast<uintptr_t>(p) % 64, 0u);
     EXPECT_EQ(lease1->bytesAllocated(), 512u);
 
@@ -227,7 +225,7 @@ TEST(MemoryPoolTest, ScopedArenaLifecycle) {
 
   {
     pyreth::ScopedArena scoped(arena);
-    void *p = scoped.allocate(1024);
+    void* p = scoped.allocate(1024);
     EXPECT_EQ(reinterpret_cast<uintptr_t>(p) % 64, 0u);
     EXPECT_EQ(arena.bytesAllocated(), 1024u);
   }
@@ -240,21 +238,20 @@ TEST(MemoryPoolTest, BenchmarkAllocationSpeedAgainstMallocAndPmr) {
   constexpr int NUM_ALLOCS = 500000;
   constexpr size_t ALLOC_SIZE = 128;
 
-  pyreth::ArenaAllocator arena(64 * 1024 * 1024); // 64 MB arena
+  pyreth::ArenaAllocator arena(64 * 1024 * 1024);  // 64 MB arena
 
   // 1. Pyreth ArenaAllocator
   auto start_arena = std::chrono::steady_clock::now();
   for (int i = 0; i < NUM_ALLOCS; ++i) {
-    void *p = arena.allocate(ALLOC_SIZE);
+    void* p = arena.allocate(ALLOC_SIZE);
     (void)p;
   }
   auto dur_arena = std::chrono::steady_clock::now() - start_arena;
-  auto ms_arena =
-      std::chrono::duration_cast<std::chrono::microseconds>(dur_arena).count();
+  auto ms_arena = std::chrono::duration_cast<std::chrono::microseconds>(dur_arena).count();
 
   // 2. std::malloc + std::free
   auto start_malloc = std::chrono::steady_clock::now();
-  std::vector<void *> malloc_ptrs(NUM_ALLOCS);
+  std::vector<void*> malloc_ptrs(NUM_ALLOCS);
   for (int i = 0; i < NUM_ALLOCS; ++i) {
     malloc_ptrs[i] = std::malloc(ALLOC_SIZE);
   }
@@ -262,11 +259,10 @@ TEST(MemoryPoolTest, BenchmarkAllocationSpeedAgainstMallocAndPmr) {
     std::free(malloc_ptrs[i]);
   }
   auto dur_malloc = std::chrono::steady_clock::now() - start_malloc;
-  auto ms_malloc =
-      std::chrono::duration_cast<std::chrono::microseconds>(dur_malloc).count();
+  auto ms_malloc = std::chrono::duration_cast<std::chrono::microseconds>(dur_malloc).count();
 
   // 3. std::pmr::new_delete_resource
-  auto *pmr_res = std::pmr::new_delete_resource();
+  auto* pmr_res = std::pmr::new_delete_resource();
   auto start_pmr = std::chrono::steady_clock::now();
   for (int i = 0; i < NUM_ALLOCS; ++i) {
     malloc_ptrs[i] = pmr_res->allocate(ALLOC_SIZE, 64);
@@ -275,18 +271,14 @@ TEST(MemoryPoolTest, BenchmarkAllocationSpeedAgainstMallocAndPmr) {
     pmr_res->deallocate(malloc_ptrs[i], ALLOC_SIZE, 64);
   }
   auto dur_pmr = std::chrono::steady_clock::now() - start_pmr;
-  auto ms_pmr =
-      std::chrono::duration_cast<std::chrono::microseconds>(dur_pmr).count();
+  auto ms_pmr = std::chrono::duration_cast<std::chrono::microseconds>(dur_pmr).count();
 
-  std::cout << "[MemoryBenchmark " << NUM_ALLOCS << " allocs (" << ALLOC_SIZE
-            << " B)]"
+  std::cout << "[MemoryBenchmark " << NUM_ALLOCS << " allocs (" << ALLOC_SIZE << " B)]"
             << "\n  ArenaAllocator: " << ms_arena / 1000.0 << " ms"
             << "\n  std::malloc:    " << ms_malloc / 1000.0 << " ms"
             << "\n  std::pmr:       " << ms_pmr / 1000.0 << " ms"
             << "\n  Speedup vs malloc: "
-            << static_cast<double>(ms_malloc) / static_cast<double>(ms_arena)
-            << "x" << std::endl;
+            << static_cast<double>(ms_malloc) / static_cast<double>(ms_arena) << "x" << std::endl;
 
-  EXPECT_LT(ms_arena, ms_malloc)
-      << "ArenaAllocator should be strictly faster than std::malloc";
+  EXPECT_LT(ms_arena, ms_malloc) << "ArenaAllocator should be strictly faster than std::malloc";
 }

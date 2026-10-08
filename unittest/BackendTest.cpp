@@ -1,12 +1,11 @@
 #include <gtest/gtest.h>
+#include <onnxruntime_cxx_api.h>
 
 #include <algorithm>
 #include <iostream>
+#include <pyreth/backend.hpp>
 #include <string>
 #include <vector>
-
-#include <onnxruntime_cxx_api.h>
-#include <pyreth/backend.hpp>
 
 namespace {
 
@@ -24,9 +23,8 @@ TEST(BackendTest, AvailableProvidersIncludesCPU) {
   const std::vector<std::string> providers = Backend::getAvailableProviders();
   ASSERT_FALSE(providers.empty());
 
-  const bool hasCpu = std::any_of(providers.begin(), providers.end(), [](const std::string& p) {
-    return p == "CPUExecutionProvider";
-  });
+  const bool hasCpu = std::any_of(providers.begin(), providers.end(),
+                                  [](const std::string& p) { return p == "CPUExecutionProvider"; });
   EXPECT_TRUE(hasCpu);
   EXPECT_TRUE(Backend::isProviderAvailable("CPUExecutionProvider"));
   EXPECT_TRUE(Backend::isProviderAvailable(ExecutionProvider::CPU));
@@ -67,9 +65,7 @@ TEST(BackendTest, TypedExecutionProvidersList) {
 
 TEST(BackendTest, EnvironmentInitializationAndHardwareReporting) {
   // Verify clean ORT environment construction and destruction
-  EXPECT_NO_THROW({
-    Ort::Env test_env(ORT_LOGGING_LEVEL_WARNING, "PyrethBackendTestEnv");
-  });
+  EXPECT_NO_THROW({ Ort::Env test_env(ORT_LOGGING_LEVEL_WARNING, "PyrethBackendTestEnv"); });
 
   const ExecutionProvider best = Backend::getBestAvailableProvider();
   EXPECT_NE(best, ExecutionProvider::UNKNOWN);
@@ -89,4 +85,4 @@ TEST(BackendTest, EnvironmentInitializationAndHardwareReporting) {
 #endif
 }
 
-} // namespace
+}  // namespace

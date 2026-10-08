@@ -1,19 +1,17 @@
-#include <pyreth/memory_pool.hpp>
-
 #include <algorithm>
 #include <new>
+#include <pyreth/memory_pool.hpp>
 
 namespace pyreth {
 
 struct ArenaAllocator::Block {
-  std::byte *data{nullptr};
+  std::byte* data{nullptr};
   size_t capacity{0};
   size_t offset{0};
   std::unique_ptr<Block> next{nullptr};
 
   explicit Block(size_t cap) : capacity(cap), offset(0) {
-    data = static_cast<std::byte *>(
-        ::operator new(capacity, std::align_val_t(DEFAULT_ALIGNMENT)));
+    data = static_cast<std::byte*>(::operator new(capacity, std::align_val_t(DEFAULT_ALIGNMENT)));
   }
 
   ~Block() {
@@ -23,26 +21,27 @@ struct ArenaAllocator::Block {
   }
 };
 
-ArenaAllocator::ArenaAllocator(size_t block_size)
-    : default_block_size_(block_size) {
+ArenaAllocator::ArenaAllocator(size_t block_size) : default_block_size_(block_size) {
   head_ = allocateBlock(default_block_size_);
   current_ = head_.get();
 }
 
 ArenaAllocator::~ArenaAllocator() = default;
 
-ArenaAllocator::ArenaAllocator(ArenaAllocator &&other) noexcept
+ArenaAllocator::ArenaAllocator(ArenaAllocator&& other) noexcept
     : default_block_size_(other.default_block_size_),
-      head_(std::move(other.head_)), current_(other.current_),
+      head_(std::move(other.head_)),
+      current_(other.current_),
       bytes_allocated_(other.bytes_allocated_),
-      bytes_reserved_(other.bytes_reserved_), block_count_(other.block_count_) {
+      bytes_reserved_(other.bytes_reserved_),
+      block_count_(other.block_count_) {
   other.current_ = nullptr;
   other.bytes_allocated_ = 0;
   other.bytes_reserved_ = 0;
   other.block_count_ = 0;
 }
 
-ArenaAllocator &ArenaAllocator::operator=(ArenaAllocator &&other) noexcept {
+ArenaAllocator& ArenaAllocator::operator=(ArenaAllocator&& other) noexcept {
   if (this != &other) {
     head_ = std::move(other.head_);
     current_ = other.current_;
@@ -59,7 +58,7 @@ ArenaAllocator &ArenaAllocator::operator=(ArenaAllocator &&other) noexcept {
   return *this;
 }
 
-void *ArenaAllocator::allocate(size_t bytes, size_t alignment) {
+void* ArenaAllocator::allocate(size_t bytes, size_t alignment) {
   if (alignment < alignof(std::max_align_t)) {
     alignment = alignof(std::max_align_t);
   }
@@ -67,40 +66,36 @@ void *ArenaAllocator::allocate(size_t bytes, size_t alignment) {
     alignment = DEFAULT_ALIGNMENT;
   }
 
-  uintptr_t curr =
-      reinterpret_cast<uintptr_t>(current_->data + current_->offset);
-  uintptr_t aligned =
-      (curr + (alignment - 1)) & ~(static_cast<uintptr_t>(alignment) - 1);
+  uintptr_t curr = reinterpret_cast<uintptr_t>(current_->data + current_->offset);
+  uintptr_t aligned = (curr + (alignment - 1)) & ~(static_cast<uintptr_t>(alignment) - 1);
   size_t padding = aligned - curr;
   size_t needed = padding + bytes;
 
   if (current_->offset + needed <= current_->capacity) {
     current_->offset += needed;
     bytes_allocated_ += bytes;
-    return reinterpret_cast<void *>(aligned);
+    return reinterpret_cast<void*>(aligned);
   }
 
   return allocateFromNextBlock(bytes, alignment);
 }
 
-Result<void *> ArenaAllocator::tryAllocate(size_t bytes,
-                                           size_t alignment) noexcept {
+Result<void*> ArenaAllocator::tryAllocate(size_t bytes, size_t alignment) noexcept {
   try {
-    void *ptr = allocate(bytes, alignment);
-    return Result<void *>::success(ptr);
+    void* ptr = allocate(bytes, alignment);
+    return Result<void*>::success(ptr);
   } catch (...) {
-    return Result<void *>::failure(StatusCode::ALLOCATION_FAILED,
-                                   "ArenaAllocator allocation failed");
+    return Result<void*>::failure(StatusCode::ALLOCATION_FAILED,
+                                  "ArenaAllocator allocation failed");
   }
 }
 
-void ArenaAllocator::deallocate(void * /*p*/, size_t /*bytes*/,
-                                size_t /*alignment*/) noexcept {
+void ArenaAllocator::deallocate(void* /*p*/, size_t /*bytes*/, size_t /*alignment*/) noexcept {
   // Arena allocations are bulk-deallocated on reset() or destruction.
 }
 
 void ArenaAllocator::reset() noexcept {
-  Block *b = head_.get();
+  Block* b = head_.get();
   while (b) {
     b->offset = 0;
     b = b->next.get();
@@ -117,29 +112,29 @@ size_t ArenaAllocator::bytesReserved() const noexcept {
   return bytes_reserved_;
 }
 
-size_t ArenaAllocator::blockCount() const noexcept { return block_count_; }
+size_t ArenaAllocator::blockCount() const noexcept {
+  return block_count_;
+}
 
-void *ArenaAllocator::do_allocate(size_t bytes, size_t alignment) {
+void* ArenaAllocator::do_allocate(size_t bytes, size_t alignment) {
   return allocate(bytes, alignment);
 }
 
-void ArenaAllocator::do_deallocate(void *p, size_t bytes, size_t alignment) {
+void ArenaAllocator::do_deallocate(void* p, size_t bytes, size_t alignment) {
   deallocate(p, bytes, alignment);
 }
 
-bool ArenaAllocator::do_is_equal(
-    const std::pmr::memory_resource &other) const noexcept {
+bool ArenaAllocator::do_is_equal(const std::pmr::memory_resource& other) const noexcept {
   return this == &other;
 }
 
-std::unique_ptr<ArenaAllocator::Block>
-ArenaAllocator::allocateBlock(size_t capacity) {
+std::unique_ptr<ArenaAllocator::Block> ArenaAllocator::allocateBlock(size_t capacity) {
   bytes_reserved_ += capacity;
   block_count_++;
   return std::make_unique<Block>(capacity);
 }
 
-void *ArenaAllocator::allocateFromNextBlock(size_t bytes, size_t alignment) {
+void* ArenaAllocator::allocateFromNextBlock(size_t bytes, size_t alignment) {
   if (current_->next) {
     current_ = current_->next.get();
     current_->offset = 0;
@@ -156,8 +151,7 @@ void *ArenaAllocator::allocateFromNextBlock(size_t bytes, size_t alignment) {
 // MemoryPool::Lease Implementation
 // ---------------------------------------------------------------------------
 
-MemoryPool::Lease::Lease(MemoryPool *pool,
-                         std::unique_ptr<ArenaAllocator> arena)
+MemoryPool::Lease::Lease(MemoryPool* pool, std::unique_ptr<ArenaAllocator> arena)
     : pool_(pool), arena_(std::move(arena)) {}
 
 MemoryPool::Lease::~Lease() {
@@ -167,12 +161,12 @@ MemoryPool::Lease::~Lease() {
   }
 }
 
-MemoryPool::Lease::Lease(Lease &&other) noexcept
+MemoryPool::Lease::Lease(Lease&& other) noexcept
     : pool_(other.pool_), arena_(std::move(other.arena_)) {
   other.pool_ = nullptr;
 }
 
-MemoryPool::Lease &MemoryPool::Lease::operator=(Lease &&other) noexcept {
+MemoryPool::Lease& MemoryPool::Lease::operator=(Lease&& other) noexcept {
   if (this != &other) {
     if (pool_ && arena_) {
       arena_->reset();
@@ -189,8 +183,7 @@ MemoryPool::Lease &MemoryPool::Lease::operator=(Lease &&other) noexcept {
 // MemoryPool Implementation
 // ---------------------------------------------------------------------------
 
-MemoryPool::MemoryPool(size_t initial_count, size_t block_size)
-    : default_block_size_(block_size) {
+MemoryPool::MemoryPool(size_t initial_count, size_t block_size) : default_block_size_(block_size) {
   for (size_t i = 0; i < initial_count; ++i) {
     arenas_.push_back(std::make_unique<ArenaAllocator>(default_block_size_));
   }
@@ -215,7 +208,7 @@ MemoryPool::Lease MemoryPool::acquire() {
   return Lease(this, std::move(arena));
 }
 
-ArenaAllocator &MemoryPool::getThreadLocalArena() {
+ArenaAllocator& MemoryPool::getThreadLocalArena() {
   thread_local ArenaAllocator tl_arena;
   return tl_arena;
 }
@@ -234,8 +227,10 @@ void MemoryPool::returnArena(std::unique_ptr<ArenaAllocator> arena) {
 // ScopedArena Implementation
 // ---------------------------------------------------------------------------
 
-ScopedArena::ScopedArena(ArenaAllocator &arena) : arena_(arena) {}
+ScopedArena::ScopedArena(ArenaAllocator& arena) : arena_(arena) {}
 
-ScopedArena::~ScopedArena() { arena_.reset(); }
+ScopedArena::~ScopedArena() {
+  arena_.reset();
+}
 
-} // namespace pyreth
+}  // namespace pyreth

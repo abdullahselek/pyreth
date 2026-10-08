@@ -3,9 +3,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <semaphore>
-
 #include <pyreth/common.hpp>
+#include <semaphore>
 
 namespace pyreth {
 
@@ -22,7 +21,7 @@ namespace pyreth {
  *  4. Zero dynamic allocation and lock-free state transitions.
  */
 class WorkerParker {
- public:
+public:
   WorkerParker() : sem_(0), state_(EMPTY) {}
   ~WorkerParker() = default;
 
@@ -57,8 +56,7 @@ class WorkerParker {
       return;
     }
     int8_t expected = EMPTY;
-    if (state_.compare_exchange_strong(expected, PARKED,
-                                       std::memory_order_relaxed)) {
+    if (state_.compare_exchange_strong(expected, PARKED, std::memory_order_relaxed)) {
       sem_.acquire();
       state_.store(EMPTY, std::memory_order_relaxed);
     } else {
@@ -81,16 +79,14 @@ class WorkerParker {
       return true;
     }
     int8_t expected = EMPTY;
-    if (state_.compare_exchange_strong(expected, PARKED,
-                                       std::memory_order_relaxed)) {
+    if (state_.compare_exchange_strong(expected, PARKED, std::memory_order_relaxed)) {
       if (sem_.try_acquire_for(duration)) {
         state_.store(EMPTY, std::memory_order_relaxed);
         return true;
       }
       // Timed out: attempt transition back from PARKED to EMPTY
       expected = PARKED;
-      if (!state_.compare_exchange_strong(expected, EMPTY,
-                                          std::memory_order_relaxed)) {
+      if (!state_.compare_exchange_strong(expected, EMPTY, std::memory_order_relaxed)) {
         // Unpark happened right at timeout deadline; consume released permit
         sem_.acquire();
         state_.store(EMPTY, std::memory_order_relaxed);
@@ -116,7 +112,7 @@ class WorkerParker {
     return state_.load(std::memory_order_relaxed) == PARKED;
   }
 
- private:
+private:
   static constexpr int8_t EMPTY = 0;
   static constexpr int8_t PARKED = 1;
   static constexpr int8_t NOTIFIED = 2;
@@ -132,7 +128,7 @@ class WorkerParker {
  * Useful for event-based worker wakeups and broadcast shutdown notifications.
  */
 class AtomicNotification {
- public:
+public:
   AtomicNotification() : count_{0} {}
   ~AtomicNotification() = default;
 
@@ -162,18 +158,14 @@ class AtomicNotification {
    *
    * @param expected The expected value that blocks the caller until changed.
    */
-  void wait(uint32_t expected) noexcept {
-    count_.wait(expected, std::memory_order_acquire);
-  }
+  void wait(uint32_t expected) noexcept { count_.wait(expected, std::memory_order_acquire); }
 
   /**
    * @brief Query current notification counter value.
    */
-  [[nodiscard]] uint32_t get() const noexcept {
-    return count_.load(std::memory_order_acquire);
-  }
+  [[nodiscard]] uint32_t get() const noexcept { return count_.load(std::memory_order_acquire); }
 
- private:
+private:
   std::atomic<uint32_t> count_{0};
 };
 

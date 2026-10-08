@@ -1,11 +1,10 @@
 #pragma once
 
+#include <pyreth/common.hpp>
+#include <pyreth/result.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include <pyreth/common.hpp>
-#include <pyreth/result.hpp>
 
 namespace pyreth {
 
@@ -13,45 +12,35 @@ namespace pyreth {
  * @enum ExecutionProvider
  * @brief Strongly typed hardware execution providers supported by Pyreth.
  */
-enum class ExecutionProvider : uint8_t {
-  CPU = 0,
-  COREML,
-  CUDA,
-  TENSORRT,
-  DIRECTML,
-  ROCM,
-  UNKNOWN
-};
+enum class ExecutionProvider : uint8_t { CPU = 0, COREML, CUDA, TENSORRT, DIRECTML, ROCM, UNKNOWN };
 
 /**
  * @brief Convert an ExecutionProvider enum to its canonical string name.
  */
-[[nodiscard]] constexpr std::string_view
-executionProviderToString(ExecutionProvider ep) noexcept {
+[[nodiscard]] constexpr std::string_view executionProviderToString(ExecutionProvider ep) noexcept {
   switch (ep) {
-  case ExecutionProvider::CPU:
-    return "CPUExecutionProvider";
-  case ExecutionProvider::COREML:
-    return "CoreMLExecutionProvider";
-  case ExecutionProvider::CUDA:
-    return "CUDAExecutionProvider";
-  case ExecutionProvider::TENSORRT:
-    return "TensorrtExecutionProvider";
-  case ExecutionProvider::DIRECTML:
-    return "DmlExecutionProvider";
-  case ExecutionProvider::ROCM:
-    return "ROCMExecutionProvider";
-  case ExecutionProvider::UNKNOWN:
-  default:
-    return "Unknown";
+    case ExecutionProvider::CPU:
+      return "CPUExecutionProvider";
+    case ExecutionProvider::COREML:
+      return "CoreMLExecutionProvider";
+    case ExecutionProvider::CUDA:
+      return "CUDAExecutionProvider";
+    case ExecutionProvider::TENSORRT:
+      return "TensorrtExecutionProvider";
+    case ExecutionProvider::DIRECTML:
+      return "DmlExecutionProvider";
+    case ExecutionProvider::ROCM:
+      return "ROCMExecutionProvider";
+    case ExecutionProvider::UNKNOWN:
+    default:
+      return "Unknown";
   }
 }
 
 /**
  * @brief Parse an execution provider string name into the strongly-typed enum.
  */
-[[nodiscard]] PYRETH_API ExecutionProvider
-parseExecutionProvider(std::string_view name) noexcept;
+[[nodiscard]] PYRETH_API ExecutionProvider parseExecutionProvider(std::string_view name) noexcept;
 
 /**
  * @class Backend
@@ -75,8 +64,7 @@ public:
    * @brief Queries all execution providers mapped to strongly-typed enum
    * values.
    */
-  [[nodiscard]] static std::vector<ExecutionProvider>
-  getAvailableExecutionProviders();
+  [[nodiscard]] static std::vector<ExecutionProvider> getAvailableExecutionProviders();
 
   /**
    * @brief Checks if a specific provider name is available in the current
@@ -109,4 +97,4 @@ public:
   [[nodiscard]] static bool hasHardwareAcceleration();
 };
 
-} // namespace pyreth
+}  // namespace pyreth

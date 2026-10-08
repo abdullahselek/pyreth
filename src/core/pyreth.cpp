@@ -7,12 +7,15 @@ Pyreth::Pyreth() {
   std::cout << "Pyreth Engine Initialized (v" << PYRETH_VERSION << ")\n";
   std::cout << "ONNX Runtime Version: " << Backend::getRuntimeVersion() << "\n";
   std::cout << "Best Available Backend: "
-            << executionProviderToString(Backend::getBestAvailableProvider())
-            << "\n";
+            << executionProviderToString(Backend::getBestAvailableProvider()) << "\n";
 }
 
-Pyreth::~Pyreth() { std::cout << "Pyreth Engine Destroyed\n"; }
+Pyreth::~Pyreth() {
+  std::cout << "Pyreth Engine Destroyed\n";
+}
 
-void run() { Pyreth p; }
+void run() {
+  Pyreth p;
+}
 
-} // namespace pyreth
+}  // namespace pyreth

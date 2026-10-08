@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
-
 #include <pyreth/common.hpp>
 #include <pyreth/pyreth.hpp>
 
@@ -37,4 +36,4 @@ TEST(Foundation, RunHelper) {
   SUCCEED();
 }
 
-} // namespace
+}  // namespace

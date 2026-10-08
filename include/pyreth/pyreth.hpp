@@ -39,4 +39,4 @@ public:
  */
 void PYRETH_API run();
 
-} // namespace pyreth
+}  // namespace pyreth

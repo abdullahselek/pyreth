@@ -4,11 +4,10 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <pyreth/thread_pool.hpp>
 #include <string>
 #include <thread>
 #include <vector>
-
-#include <pyreth/thread_pool.hpp>
 
 using namespace std::chrono_literals;
 
@@ -32,8 +31,7 @@ TEST(ThreadPoolTest, SubmitWithReturnValue) {
   auto res1 = pool.submit([](int a, int b) { return a + b; }, 18, 24);
   ASSERT_TRUE(res1.isOk());
 
-  auto res2 = pool.submit([](std::string s) { return s + "_processed"; },
-                          std::string("input"));
+  auto res2 = pool.submit([](std::string s) { return s + "_processed"; }, std::string("input"));
   ASSERT_TRUE(res2.isOk());
 
   auto h1 = std::move(res1).value();
@@ -47,8 +45,7 @@ TEST(ThreadPoolTest, SubmitVoidTask) {
   pyreth::ThreadPool pool(2);
   std::atomic<int> counter{0};
 
-  auto res = pool.submit(
-      [&counter]() { counter.fetch_add(10, std::memory_order_relaxed); });
+  auto res = pool.submit([&counter]() { counter.fetch_add(10, std::memory_order_relaxed); });
   ASSERT_TRUE(res.isOk());
 
   auto handle = std::move(res).value();
@@ -75,8 +72,8 @@ TEST(ThreadPoolTest, SubmitDetachedFireAndForget) {
   constexpr int N = 100;
 
   for (int i = 0; i < N; ++i) {
-    auto status = pool.submitDetached(
-        [&counter]() { counter.fetch_add(1, std::memory_order_relaxed); });
+    auto status =
+        pool.submitDetached([&counter]() { counter.fetch_add(1, std::memory_order_relaxed); });
     EXPECT_TRUE(status.isOk());
   }
 
@@ -115,9 +112,8 @@ TEST(ThreadPoolTest, WorkStealingAcrossWorkers) {
   // Submit a root task that spawns child tasks from within worker 0
   auto root_res = pool.submit([&pool, &completed]() {
     for (int i = 0; i < SUBTASKS; ++i) {
-      (void)pool.submitDetached([&completed]() {
-        completed.fetch_add(1, std::memory_order_relaxed);
-      });
+      (void)pool.submitDetached(
+          [&completed]() { completed.fetch_add(1, std::memory_order_relaxed); });
     }
   });
   ASSERT_TRUE(root_res.isOk());
@@ -130,8 +126,7 @@ TEST(ThreadPoolTest, WorkStealingAcrossWorkers) {
   EXPECT_EQ(completed.load(), SUBTASKS);
 
   auto m = pool.metrics();
-  EXPECT_GT(m.tasks_stolen, 0u)
-      << "Child tasks should be stolen across peer worker threads";
+  EXPECT_GT(m.tasks_stolen, 0u) << "Child tasks should be stolen across peer worker threads";
 }
 
 TEST(ThreadPoolTest, Throughput100kTasksAndLatencyDistribution) {
@@ -147,9 +142,8 @@ TEST(ThreadPoolTest, Throughput100kTasksAndLatencyDistribution) {
     auto submit_time = std::chrono::steady_clock::now();
     (void)pool.submitDetached([&completed, &latencies_us, i, submit_time]() {
       auto exec_time = std::chrono::steady_clock::now();
-      auto dur = std::chrono::duration_cast<std::chrono::microseconds>(
-                     exec_time - submit_time)
-                     .count();
+      auto dur =
+          std::chrono::duration_cast<std::chrono::microseconds>(exec_time - submit_time).count();
       latencies_us[i] = static_cast<uint64_t>(dur);
       completed.fetch_add(1, std::memory_order_relaxed);
     });
@@ -160,9 +154,7 @@ TEST(ThreadPoolTest, Throughput100kTasksAndLatencyDistribution) {
   }
 
   auto total_duration = std::chrono::steady_clock::now() - start_time;
-  auto total_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(total_duration)
-          .count();
+  auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(total_duration).count();
 
   EXPECT_EQ(completed.load(), NUM_TASKS);
 
@@ -173,8 +165,7 @@ TEST(ThreadPoolTest, Throughput100kTasksAndLatencyDistribution) {
   uint64_t p99 = latencies_us[NUM_TASKS * 99 / 100];
 
   std::cout << "[Throughput100k] Total Time: " << total_ms << " ms"
-            << " | Throughput: "
-            << (total_ms > 0 ? (NUM_TASKS * 1000 / total_ms) : 0)
+            << " | Throughput: " << (total_ms > 0 ? (NUM_TASKS * 1000 / total_ms) : 0)
             << " tasks/sec"
             << " | P50: " << p50 << " us"
             << " | P90: " << p90 << " us"

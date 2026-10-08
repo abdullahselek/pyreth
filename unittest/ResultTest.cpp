@@ -1,11 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <pyreth/result.hpp>
 #include <string>
 #include <string_view>
 #include <type_traits>
-
-#include <pyreth/result.hpp>
 
 namespace {
 
@@ -301,4 +300,4 @@ TEST(ResultTest, ZeroHeapAllocationLayout) {
   EXPECT_TRUE(std::is_nothrow_move_constructible_v<Result<int>>);
 }
 
-} // namespace
+}  // namespace

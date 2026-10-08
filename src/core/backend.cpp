@@ -1,5 +1,6 @@
-#include <algorithm>
 #include <onnxruntime_cxx_api.h>
+
+#include <algorithm>
 #include <pyreth/backend.hpp>
 
 namespace pyreth {
@@ -26,7 +27,9 @@ ExecutionProvider parseExecutionProvider(std::string_view name) noexcept {
   return ExecutionProvider::UNKNOWN;
 }
 
-std::string Backend::getRuntimeVersion() { return Ort::GetVersionString(); }
+std::string Backend::getRuntimeVersion() {
+  return Ort::GetVersionString();
+}
 
 std::vector<std::string> Backend::getAvailableProviders() {
   return Ort::GetAvailableProviders();
@@ -36,7 +39,7 @@ std::vector<ExecutionProvider> Backend::getAvailableExecutionProviders() {
   const auto providers = getAvailableProviders();
   std::vector<ExecutionProvider> result;
   result.reserve(providers.size());
-  for (const auto &provider : providers) {
+  for (const auto& provider : providers) {
     result.push_back(parseExecutionProvider(provider));
   }
   return result;
@@ -44,9 +47,8 @@ std::vector<ExecutionProvider> Backend::getAvailableExecutionProviders() {
 
 bool Backend::isProviderAvailable(std::string_view provider_name) {
   const auto providers = getAvailableProviders();
-  return std::any_of(
-      providers.begin(), providers.end(),
-      [provider_name](const std::string &p) { return p == provider_name; });
+  return std::any_of(providers.begin(), providers.end(),
+                     [provider_name](const std::string& p) { return p == provider_name; });
 }
 
 bool Backend::isProviderAvailable(ExecutionProvider provider) {
@@ -56,9 +58,8 @@ bool Backend::isProviderAvailable(ExecutionProvider provider) {
 ExecutionProvider Backend::getBestAvailableProvider() {
   // Ordered by preference
   constexpr ExecutionProvider priority[] = {
-      ExecutionProvider::TENSORRT, ExecutionProvider::CUDA,
-      ExecutionProvider::COREML,   ExecutionProvider::DIRECTML,
-      ExecutionProvider::ROCM,
+      ExecutionProvider::TENSORRT, ExecutionProvider::CUDA, ExecutionProvider::COREML,
+      ExecutionProvider::DIRECTML, ExecutionProvider::ROCM,
   };
 
   for (const auto ep : priority) {
@@ -75,4 +76,4 @@ bool Backend::hasHardwareAcceleration() {
   return best != ExecutionProvider::CPU && best != ExecutionProvider::UNKNOWN;
 }
 
-} // namespace pyreth
+}  // namespace pyreth
