@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <memory_resource>
@@ -113,6 +114,42 @@ public:
   void reset() noexcept;
 
   /**
+   * @brief Pin the arena to indicate an active external reference (e.g. Tensor)
+   * is holding memory. While pinned, reset() will not recycle memory.
+   */
+  void pin() noexcept;
+
+  /**
+   * @brief Unpin the arena when an active external reference is released.
+   */
+  void unpin() noexcept;
+
+  /**
+   * @brief Check whether the arena is currently pinned.
+   */
+  [[nodiscard]] bool isPinned() const noexcept;
+
+  /**
+   * @brief Get the current number of active pins on this arena.
+   */
+  [[nodiscard]] size_t pinCount() const noexcept;
+
+  /**
+   * @brief Returns true if the arena has no active pins and can be safely reset.
+   */
+  [[nodiscard]] bool canReset() const noexcept;
+
+  /**
+   * @brief Exception-free monadic reset. Fails if the arena is pinned by active references.
+   */
+  Result<void> tryReset() noexcept;
+
+  /**
+   * @brief Reset the arena unconditionally, ignoring any active pins.
+   */
+  void forceReset() noexcept;
+
+  /**
    * @brief Total payload bytes currently allocated from this arena.
    */
   [[nodiscard]] size_t bytesAllocated() const noexcept;
@@ -145,6 +182,7 @@ private:
   size_t bytes_allocated_{0};
   size_t bytes_reserved_{0};
   size_t block_count_{0};
+  std::atomic<size_t> pinned_count_{0};
 };
 
 /**

@@ -4,6 +4,7 @@
 #include <pyreth/common.hpp>
 #include <pyreth/memory_pool.hpp>
 #include <pyreth/result.hpp>
+#include <pyreth/tensor.hpp>
 #include <pyreth/thread_pool.hpp>
 #include <pyreth/work_stealing_queue.hpp>
 #include <pyreth/worker_parker.hpp>

@@ -35,6 +35,9 @@ ArenaAllocator::ArenaAllocator(ArenaAllocator&& other) noexcept
       bytes_allocated_(other.bytes_allocated_),
       bytes_reserved_(other.bytes_reserved_),
       block_count_(other.block_count_) {
+  pinned_count_.store(other.pinned_count_.load(std::memory_order_relaxed),
+                      std::memory_order_relaxed);
+  other.pinned_count_.store(0, std::memory_order_relaxed);
   other.current_ = nullptr;
   other.bytes_allocated_ = 0;
   other.bytes_reserved_ = 0;
@@ -49,7 +52,10 @@ ArenaAllocator& ArenaAllocator::operator=(ArenaAllocator&& other) noexcept {
     bytes_allocated_ = other.bytes_allocated_;
     bytes_reserved_ = other.bytes_reserved_;
     block_count_ = other.block_count_;
+    pinned_count_.store(other.pinned_count_.load(std::memory_order_relaxed),
+                        std::memory_order_relaxed);
 
+    other.pinned_count_.store(0, std::memory_order_relaxed);
     other.current_ = nullptr;
     other.bytes_allocated_ = 0;
     other.bytes_reserved_ = 0;
@@ -94,7 +100,44 @@ void ArenaAllocator::deallocate(void* /*p*/, size_t /*bytes*/, size_t /*alignmen
   // Arena allocations are bulk-deallocated on reset() or destruction.
 }
 
+void ArenaAllocator::pin() noexcept {
+  pinned_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ArenaAllocator::unpin() noexcept {
+  pinned_count_.fetch_sub(1, std::memory_order_release);
+}
+
+bool ArenaAllocator::isPinned() const noexcept {
+  return pinned_count_.load(std::memory_order_acquire) > 0;
+}
+
+size_t ArenaAllocator::pinCount() const noexcept {
+  return pinned_count_.load(std::memory_order_acquire);
+}
+
+bool ArenaAllocator::canReset() const noexcept {
+  return !isPinned();
+}
+
 void ArenaAllocator::reset() noexcept {
+  if (isPinned()) {
+    return;
+  }
+  forceReset();
+}
+
+Result<void> ArenaAllocator::tryReset() noexcept {
+  if (isPinned()) {
+    return Result<void>::failure(
+        StatusCode::INVALID_ARGUMENT,
+        "Cannot reset ArenaAllocator: active references are pinning memory");
+  }
+  forceReset();
+  return Result<void>::success();
+}
+
+void ArenaAllocator::forceReset() noexcept {
   Block* b = head_.get();
   while (b) {
     b->offset = 0;
