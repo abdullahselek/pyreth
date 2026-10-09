@@ -28,6 +28,7 @@ add_library(EngineCore STATIC
     src/core/backend.cpp
     src/core/thread_pool.cpp
     src/core/memory_pool.cpp
+    src/core/tensor.cpp
 )
 
 set_target_properties(EngineCore PROPERTIES
