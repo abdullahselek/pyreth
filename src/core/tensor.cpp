@@ -1,7 +1,7 @@
 #include <algorithm>
 #include <new>
-#include <sstream>
 #include <pyreth/tensor.hpp>
+#include <sstream>
 
 namespace pyreth {
 
