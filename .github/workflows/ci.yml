@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Check C++ code formatting (clang-format)
         run: |
@@ -26,7 +26,7 @@ jobs:
           find include src unittest sandbox python \( -name '*.hpp' -o -name '*.cpp' \) -print0 | xargs -0 clang-format --dry-run --Werror
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Check Python formatting & linting (ruff)
         run: |
@@ -46,7 +46,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # CMAKE_BUILD_TYPE is honored by single-config generators (Makefiles/Ninja
       # on Linux & macOS) and safely ignored by the multi-config VS generator.
@@ -73,7 +73,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Python tests (uv run pytest)
         run: |
