@@ -144,7 +144,71 @@ if (session_res.isOk()) {
 
 ---
 
-## 6. Move Semantics & Thread Safety
+## 6. Model Metadata & IO Discovery (`ModelInfo`)
+
+When an `InferenceSession` is created, Pyreth inspects the ONNX computation graph once and caches all model-level and tensor-level metadata inside a `pyreth::ModelInfo` struct. Subsequent lookups and runtime tensor validations operate directly against this cached schema with **zero heap allocations** and **zero ONNX Runtime C-API calls** on the inference hot path.
+
+### Inspecting Model Metadata
+
+```cpp
+#include <pyreth/inference_session.hpp>
+#include <iostream>
+
+auto session = pyreth::InferenceSession::create("models/resnet50_dynamic.onnx").value();
+const pyreth::ModelInfo& info = session.getModelInfo();
+
+std::cout << "Graph Name: " << info.graph_name << "\n"
+          << "Producer:   " << info.producer_name << "\n"
+          << "Domain:     " << info.domain << "\n"
+          << "Version:    " << info.version << "\n"
+          << "Dynamic Batch Supported: " << (info.hasDynamicBatch() ? "Yes" : "No") << "\n";
+
+for (const auto& [key, val] : info.custom_metadata) {
+  std::cout << "Metadata [" << key << "] = " << val << "\n";
+}
+```
+
+### Inspecting Input & Output Schemas (`TensorInfo`)
+
+Each input and output node is represented by a `pyreth::TensorInfo` struct containing:
+- `name`: Graph node identifier (e.g., `"input"`, `"input_ids"`, `"logits"`).
+- `dtype`: `pyreth::DataType` (`Float32`, `Float16`, `BFloat16`, `Int64`, `Int32`, `UInt8`, `Bool`, etc.).
+- `shape`: `std::vector<int64_t>` where positive values denote fixed dimensions (e.g., `224`) and `-1` denotes a dynamic dimension.
+- `symbolic_dims`: `std::vector<std::string>` storing symbolic axis names from the ONNX graph (e.g., `"batch_size"`, `"sequence_length"`), or `""` for fixed/unnamed axes.
+
+```cpp
+for (const pyreth::TensorInfo& input : session.getInputs()) {
+  std::cout << input.toString() << "\n";
+  // Example output:
+  // TensorInfo(name="input", dtype=Float32, shape=[batch_size(-1), 3, 224, 224])
+
+  if (input.hasDynamicBatch()) {
+    std::cout << "Static elements per sample: " << input.fixedElementCount() << "\n";
+  }
+}
+```
+
+### Zero-Overhead Runtime Input Validation
+
+Before dispatching tensors to ONNX Runtime, callers (or the `DynamicBatcher`) can validate runtime `pyreth::Tensor` instances against the cached `ModelInfo`:
+
+1. **Data Type Verification**: Ensures each `Tensor::dtype()` matches the expected `TensorInfo::dtype`.
+2. **Rank & Fixed Dimension Check**: Verifies tensor rank and ensures all static dimensions (`>= 0`) match the model specification.
+3. **Dynamic Dimension Check**: Verifies that dynamic dimensions (`-1`) resolve to strictly positive runtime sizes (`> 0`).
+4. **Cross-Input Symbolic Dimension Consistency**: When multiple inputs share a symbolic dimension name (such as `"batch_size"` or `"sequence_length"` across Transformer `input_ids` and `attention_mask`), `validateInputs()` enforces that their runtime sizes match across all participating inputs.
+
+```cpp
+auto input_tensor = pyreth::Tensor::create(pyreth::Shape{8, 3, 224, 224}, pyreth::DataType::Float32).value();
+
+pyreth::Status status = session.validateInputs(std::span<const pyreth::Tensor>(&input_tensor, 1));
+if (!status.isOk()) {
+  std::cerr << "Validation failed: " << status.error().message() << "\n";
+}
+```
+
+---
+
+## 7. Move Semantics & Thread Safety
 
 - **Move-Only**: `InferenceSession` is strictly move-only (`InferenceSession(const InferenceSession&) = delete`). Transfer of session ownership safely relocates underlying ORT resources without reallocation.
 - **Concurrent Inference**: A single `InferenceSession` instance is safe for concurrent inference runs across multiple worker threads once initialized.
