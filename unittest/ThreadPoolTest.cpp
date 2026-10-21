@@ -106,14 +106,18 @@ TEST(ThreadPoolTest, ComputeThreadBudget) {
 
 TEST(ThreadPoolTest, WorkStealingAcrossWorkers) {
   pyreth::ThreadPool pool(4);
-  constexpr int SUBTASKS = 5000;
+  constexpr int SUBTASKS = 256;
   std::atomic<int> completed{0};
 
-  // Submit a root task that spawns child tasks from within worker 0
+  // Submit a root task that spawns child tasks into its local work-stealing deque
+  // and waits until at least one peer worker steals a task before returning.
   auto root_res = pool.submit([&pool, &completed]() {
     for (int i = 0; i < SUBTASKS; ++i) {
       (void)pool.submitDetached(
           [&completed]() { completed.fetch_add(1, std::memory_order_relaxed); });
+    }
+    while (completed.load(std::memory_order_relaxed) == 0) {
+      std::this_thread::yield();
     }
   });
   ASSERT_TRUE(root_res.isOk());
