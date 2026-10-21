@@ -5,16 +5,74 @@
 #endif
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <pyreth/backend.hpp>
 #include <pyreth/inference_session.hpp>
+#include <pyreth/ort_bridge.hpp>
 #include <pyreth/runtime.hpp>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 namespace pyreth {
+
+Result<Ort::Value> tensorToOrtValue(const Tensor& tensor, const Ort::MemoryInfo& memory_info) {
+  if (!tensor.isValid()) {
+    return Result<Ort::Value>::failure(StatusCode::INVALID_ARGUMENT,
+                                       "Cannot wrap invalid or uninitialized Tensor in Ort::Value");
+  }
+  if (!tensor.isContiguous()) {
+    return Result<Ort::Value>::failure(
+        StatusCode::INVALID_ARGUMENT,
+        "Zero-copy Ort::Value bridge requires a contiguous Tensor; call toContiguous() first");
+  }
+
+  const ONNXTensorElementDataType ort_dtype = toOrtDataType(tensor.dtype());
+  if (ort_dtype == ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED) {
+    return Result<Ort::Value>::failure(StatusCode::INVALID_ARGUMENT,
+                                       "Unsupported Tensor DataType for Ort::Value bridge");
+  }
+
+  try {
+    auto ort_val =
+        Ort::Value::CreateTensor(memory_info, const_cast<void*>(tensor.data()), tensor.totalBytes(),
+                                 tensor.shape().data(), tensor.shape().rank(), ort_dtype);
+    return Result<Ort::Value>::success(std::move(ort_val));
+  } catch (const Ort::Exception& e) {
+    return Result<Ort::Value>::failure(StatusCode::BACKEND_ERROR, e.what());
+  } catch (const std::exception& e) {
+    return Result<Ort::Value>::failure(StatusCode::INTERNAL_ERROR, e.what());
+  }
+}
+
+Result<Ort::Value> tensorToOrtValue(const Tensor& tensor) {
+  static const Ort::MemoryInfo cpu_memory_info =
+      Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+  return tensorToOrtValue(tensor, cpu_memory_info);
+}
+
+Result<Tensor> tensorFromOrtValue(Ort::Value&& ort_value) {
+  if (!ort_value.HasValue() || !ort_value.IsTensor()) {
+    return Result<Tensor>::failure(StatusCode::INVALID_ARGUMENT,
+                                   "Ort::Value is null or does not contain a tensor");
+  }
+
+  try {
+    auto type_shape = ort_value.GetTensorTypeAndShapeInfo();
+    const DataType dtype = fromOrtDataType(type_shape.GetElementType());
+    Shape shape(type_shape.GetShape());
+    void* raw_data = ort_value.GetTensorMutableRawData();
+
+    auto owner = std::make_shared<Ort::Value>(std::move(ort_value));
+    return Tensor::fromBuffer(raw_data, shape, dtype, {}, std::move(owner));
+  } catch (const Ort::Exception& e) {
+    return Result<Tensor>::failure(StatusCode::BACKEND_ERROR, e.what());
+  } catch (const std::exception& e) {
+    return Result<Tensor>::failure(StatusCode::INTERNAL_ERROR, e.what());
+  }
+}
 
 static OrtLoggingLevel toOrtLoggingLevel(LogLevel level) noexcept {
   switch (level) {
@@ -30,39 +88,6 @@ static OrtLoggingLevel toOrtLoggingLevel(LogLevel level) noexcept {
       return ORT_LOGGING_LEVEL_FATAL;
   }
   return ORT_LOGGING_LEVEL_WARNING;
-}
-
-static DataType fromOrtDataType(ONNXTensorElementDataType ort_type) noexcept {
-  switch (ort_type) {
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
-      return DataType::Float32;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
-      return DataType::Float16;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:
-      return DataType::BFloat16;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:
-      return DataType::Float64;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
-      return DataType::Int8;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
-      return DataType::UInt8;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16:
-      return DataType::Int16;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16:
-      return DataType::UInt16;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
-      return DataType::Int32;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32:
-      return DataType::UInt32;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
-      return DataType::Int64;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT64:
-      return DataType::UInt64;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
-      return DataType::Bool;
-    default:
-      return DataType::Float32;
-  }
 }
 
 static TensorInfo extractTensorInfo(const char* name, const Ort::TypeInfo& type_info) {
@@ -241,6 +266,10 @@ struct InferenceSession::Impl {
   ModelInfo model_info;
   std::vector<std::string> input_names;
   std::vector<std::string> output_names;
+  std::vector<const char*> input_name_ptrs;
+  std::vector<const char*> output_name_ptrs;
+  Ort::MemoryInfo cpu_memory_info{
+      Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault)};
 
   void populateModelInfo() {
     if (!session) {
@@ -283,11 +312,14 @@ struct InferenceSession::Impl {
     const size_t in_count = session->GetInputCount();
     input_names.clear();
     input_names.reserve(in_count);
+    input_name_ptrs.clear();
+    input_name_ptrs.reserve(in_count);
     model_info.inputs.clear();
     model_info.inputs.reserve(in_count);
     for (size_t i = 0; i < in_count; ++i) {
       auto name = session->GetInputNameAllocated(i, allocator);
       input_names.emplace_back(name.get());
+      input_name_ptrs.push_back(input_names.back().c_str());
       model_info.inputs.push_back(extractTensorInfo(name.get(), session->GetInputTypeInfo(i)));
     }
 
@@ -295,15 +327,51 @@ struct InferenceSession::Impl {
     const size_t out_count = session->GetOutputCount();
     output_names.clear();
     output_names.reserve(out_count);
+    output_name_ptrs.clear();
+    output_name_ptrs.reserve(out_count);
     model_info.outputs.clear();
     model_info.outputs.reserve(out_count);
     for (size_t i = 0; i < out_count; ++i) {
       auto name = session->GetOutputNameAllocated(i, allocator);
       output_names.emplace_back(name.get());
+      output_name_ptrs.push_back(output_names.back().c_str());
       model_info.outputs.push_back(extractTensorInfo(name.get(), session->GetOutputTypeInfo(i)));
     }
   }
 };
+
+static bool tryResolveOutputShape(const TensorInfo& out_info,
+                                  const std::vector<TensorInfo>& in_infos,
+                                  std::span<const Tensor> inputs, Shape& resolved_shape) {
+  std::vector<int64_t> dims(out_info.shape.size(), 0);
+  for (size_t d = 0; d < out_info.shape.size(); ++d) {
+    if (out_info.shape[d] >= 0) {
+      dims[d] = out_info.shape[d];
+      continue;
+    }
+
+    // Dynamic dimension: attempt to resolve via symbolic dimension name from inputs
+    const std::string& sym = (d < out_info.symbolic_dims.size()) ? out_info.symbolic_dims[d] : "";
+    bool found = false;
+    if (!sym.empty()) {
+      for (size_t in_idx = 0; in_idx < in_infos.size() && !found; ++in_idx) {
+        const auto& in_syms = in_infos[in_idx].symbolic_dims;
+        for (size_t in_d = 0; in_d < in_syms.size(); ++in_d) {
+          if (in_syms[in_d] == sym) {
+            dims[d] = inputs[in_idx].shape()[in_d];
+            found = true;
+            break;
+          }
+        }
+      }
+    }
+    if (!found) {
+      return false;
+    }
+  }
+  resolved_shape = Shape(std::move(dims));
+  return true;
+}
 
 InferenceSession::InferenceSession() noexcept : impl_(nullptr) {}
 
@@ -472,6 +540,347 @@ Status InferenceSession::validateInputs(std::span<const Tensor> inputs) const no
     return Status::failure(StatusCode::INVALID_ARGUMENT, "Session is uninitialized or invalid");
   }
   return impl_->model_info.validateInputs(inputs);
+}
+
+Result<std::vector<Tensor>> InferenceSession::run(std::span<const Tensor> inputs) {
+  if (!isValid()) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::INVALID_ARGUMENT,
+                                                "Session is uninitialized or invalid");
+  }
+
+  auto val_status = impl_->model_info.validateInputs(inputs);
+  if (!val_status.isOk()) {
+    return Result<std::vector<Tensor>>::failure(val_status.error());
+  }
+
+  // Pin input TensorStorage references across the entire ORT execution scope.
+  // Declared before `ort_inputs` so non-owning Ort::Value wrappers are destroyed first.
+  std::vector<Tensor> pinned_inputs(inputs.begin(), inputs.end());
+
+  std::vector<Ort::Value> ort_inputs;
+  ort_inputs.reserve(pinned_inputs.size());
+  for (const auto& tensor : pinned_inputs) {
+    auto ort_val_res = tensorToOrtValue(tensor, impl_->cpu_memory_info);
+    if (!ort_val_res.isOk()) {
+      return Result<std::vector<Tensor>>::failure(ort_val_res.error());
+    }
+    ort_inputs.push_back(std::move(ort_val_res).value());
+  }
+
+  try {
+    Ort::RunOptions run_opts{nullptr};
+    auto ort_outputs = impl_->session->Run(
+        run_opts, impl_->input_name_ptrs.data(), ort_inputs.data(), ort_inputs.size(),
+        impl_->output_name_ptrs.data(), impl_->output_name_ptrs.size());
+
+    std::vector<Tensor> outputs;
+    outputs.reserve(ort_outputs.size());
+    for (auto& ort_out : ort_outputs) {
+      auto tensor_res = tensorFromOrtValue(std::move(ort_out));
+      if (!tensor_res.isOk()) {
+        return Result<std::vector<Tensor>>::failure(tensor_res.error());
+      }
+      outputs.push_back(std::move(tensor_res).value());
+    }
+    return Result<std::vector<Tensor>>::success(std::move(outputs));
+  } catch (const Ort::Exception& e) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::BACKEND_ERROR, e.what());
+  } catch (const std::exception& e) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::INTERNAL_ERROR, e.what());
+  }
+}
+
+Result<std::vector<Tensor>> InferenceSession::run(std::span<const Tensor> inputs,
+                                                  ArenaAllocator& output_arena) {
+  if (!isValid()) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::INVALID_ARGUMENT,
+                                                "Session is uninitialized or invalid");
+  }
+
+  auto val_status = impl_->model_info.validateInputs(inputs);
+  if (!val_status.isOk()) {
+    return Result<std::vector<Tensor>>::failure(val_status.error());
+  }
+
+  // Pin input and pre-allocated output TensorStorage handles before Ort::Value wrappers.
+  std::vector<Tensor> pinned_inputs(inputs.begin(), inputs.end());
+  const size_t out_count = impl_->model_info.outputs.size();
+  std::vector<Tensor> outputs(out_count);
+  std::vector<bool> preallocated(out_count, false);
+
+  std::vector<Ort::Value> ort_inputs;
+  ort_inputs.reserve(pinned_inputs.size());
+  for (const auto& tensor : pinned_inputs) {
+    auto ort_val_res = tensorToOrtValue(tensor, impl_->cpu_memory_info);
+    if (!ort_val_res.isOk()) {
+      return Result<std::vector<Tensor>>::failure(ort_val_res.error());
+    }
+    ort_inputs.push_back(std::move(ort_val_res).value());
+  }
+
+  std::vector<Ort::Value> ort_outputs;
+  ort_outputs.reserve(out_count);
+  for (size_t i = 0; i < out_count; ++i) {
+    Shape resolved_shape;
+    if (tryResolveOutputShape(impl_->model_info.outputs[i], impl_->model_info.inputs, inputs,
+                              resolved_shape)) {
+      auto out_res =
+          Tensor::create(resolved_shape, impl_->model_info.outputs[i].dtype, output_arena);
+      if (!out_res.isOk()) {
+        return Result<std::vector<Tensor>>::failure(out_res.error());
+      }
+      outputs[i] = std::move(out_res).value();
+      auto ort_out_res = tensorToOrtValue(outputs[i], impl_->cpu_memory_info);
+      if (!ort_out_res.isOk()) {
+        return Result<std::vector<Tensor>>::failure(ort_out_res.error());
+      }
+      ort_outputs.push_back(std::move(ort_out_res).value());
+      preallocated[i] = true;
+    } else {
+      ort_outputs.emplace_back(nullptr);
+    }
+  }
+
+  try {
+    Ort::RunOptions run_opts{nullptr};
+    impl_->session->Run(run_opts, impl_->input_name_ptrs.data(), ort_inputs.data(),
+                        ort_inputs.size(), impl_->output_name_ptrs.data(), ort_outputs.data(),
+                        ort_outputs.size());
+
+    for (size_t i = 0; i < out_count; ++i) {
+      if (!preallocated[i]) {
+        auto type_shape = ort_outputs[i].GetTensorTypeAndShapeInfo();
+        Shape actual_shape(type_shape.GetShape());
+        DataType dtype = fromOrtDataType(type_shape.GetElementType());
+        auto out_res = Tensor::create(actual_shape, dtype, output_arena);
+        if (!out_res.isOk()) {
+          return Result<std::vector<Tensor>>::failure(out_res.error());
+        }
+        outputs[i] = std::move(out_res).value();
+        if (outputs[i].totalBytes() > 0) {
+          std::memcpy(outputs[i].data(), ort_outputs[i].GetTensorRawData(),
+                      outputs[i].totalBytes());
+        }
+      }
+    }
+    return Result<std::vector<Tensor>>::success(std::move(outputs));
+  } catch (const Ort::Exception& e) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::BACKEND_ERROR, e.what());
+  } catch (const std::exception& e) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::INTERNAL_ERROR, e.what());
+  }
+}
+
+Result<std::vector<Tensor>> InferenceSession::run(std::span<const Tensor> inputs,
+                                                  MemoryPool& output_pool) {
+  if (!isValid()) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::INVALID_ARGUMENT,
+                                                "Session is uninitialized or invalid");
+  }
+
+  auto val_status = impl_->model_info.validateInputs(inputs);
+  if (!val_status.isOk()) {
+    return Result<std::vector<Tensor>>::failure(val_status.error());
+  }
+
+  std::vector<Tensor> pinned_inputs(inputs.begin(), inputs.end());
+  const size_t out_count = impl_->model_info.outputs.size();
+  std::vector<Tensor> outputs(out_count);
+  std::vector<bool> preallocated(out_count, false);
+
+  std::vector<Ort::Value> ort_inputs;
+  ort_inputs.reserve(pinned_inputs.size());
+  for (const auto& tensor : pinned_inputs) {
+    auto ort_val_res = tensorToOrtValue(tensor, impl_->cpu_memory_info);
+    if (!ort_val_res.isOk()) {
+      return Result<std::vector<Tensor>>::failure(ort_val_res.error());
+    }
+    ort_inputs.push_back(std::move(ort_val_res).value());
+  }
+
+  std::vector<Ort::Value> ort_outputs;
+  ort_outputs.reserve(out_count);
+  for (size_t i = 0; i < out_count; ++i) {
+    Shape resolved_shape;
+    if (tryResolveOutputShape(impl_->model_info.outputs[i], impl_->model_info.inputs, inputs,
+                              resolved_shape)) {
+      auto out_res =
+          Tensor::create(resolved_shape, impl_->model_info.outputs[i].dtype, output_pool);
+      if (!out_res.isOk()) {
+        return Result<std::vector<Tensor>>::failure(out_res.error());
+      }
+      outputs[i] = std::move(out_res).value();
+      auto ort_out_res = tensorToOrtValue(outputs[i], impl_->cpu_memory_info);
+      if (!ort_out_res.isOk()) {
+        return Result<std::vector<Tensor>>::failure(ort_out_res.error());
+      }
+      ort_outputs.push_back(std::move(ort_out_res).value());
+      preallocated[i] = true;
+    } else {
+      ort_outputs.emplace_back(nullptr);
+    }
+  }
+
+  try {
+    Ort::RunOptions run_opts{nullptr};
+    impl_->session->Run(run_opts, impl_->input_name_ptrs.data(), ort_inputs.data(),
+                        ort_inputs.size(), impl_->output_name_ptrs.data(), ort_outputs.data(),
+                        ort_outputs.size());
+
+    for (size_t i = 0; i < out_count; ++i) {
+      if (!preallocated[i]) {
+        auto type_shape = ort_outputs[i].GetTensorTypeAndShapeInfo();
+        Shape actual_shape(type_shape.GetShape());
+        DataType dtype = fromOrtDataType(type_shape.GetElementType());
+        auto out_res = Tensor::create(actual_shape, dtype, output_pool);
+        if (!out_res.isOk()) {
+          return Result<std::vector<Tensor>>::failure(out_res.error());
+        }
+        outputs[i] = std::move(out_res).value();
+        if (outputs[i].totalBytes() > 0) {
+          std::memcpy(outputs[i].data(), ort_outputs[i].GetTensorRawData(),
+                      outputs[i].totalBytes());
+        }
+      }
+    }
+    return Result<std::vector<Tensor>>::success(std::move(outputs));
+  } catch (const Ort::Exception& e) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::BACKEND_ERROR, e.what());
+  } catch (const std::exception& e) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::INTERNAL_ERROR, e.what());
+  }
+}
+
+Status InferenceSession::run(std::span<const Tensor> inputs, std::span<Tensor> outputs) {
+  if (!isValid()) {
+    return Status::failure(StatusCode::INVALID_ARGUMENT, "Session is uninitialized or invalid");
+  }
+
+  auto val_status = impl_->model_info.validateInputs(inputs);
+  if (!val_status.isOk()) {
+    return val_status;
+  }
+
+  if (outputs.size() != impl_->model_info.outputs.size()) {
+    return Status::failure(StatusCode::INVALID_ARGUMENT,
+                           "Number of pre-allocated output tensors does not match model outputs");
+  }
+
+  for (size_t i = 0; i < outputs.size(); ++i) {
+    auto out_status = impl_->model_info.outputs[i].validateTensor(outputs[i]);
+    if (!out_status.isOk()) {
+      return out_status;
+    }
+  }
+
+  // Pin both input and output TensorStorage handles before creating Ort::Value wrappers.
+  std::vector<Tensor> pinned_inputs(inputs.begin(), inputs.end());
+  std::vector<Tensor> pinned_outputs(outputs.begin(), outputs.end());
+
+  std::vector<Ort::Value> ort_inputs;
+  ort_inputs.reserve(pinned_inputs.size());
+  for (const auto& tensor : pinned_inputs) {
+    auto ort_val_res = tensorToOrtValue(tensor, impl_->cpu_memory_info);
+    if (!ort_val_res.isOk()) {
+      return Status::failure(ort_val_res.error());
+    }
+    ort_inputs.push_back(std::move(ort_val_res).value());
+  }
+
+  std::vector<Ort::Value> ort_outputs;
+  ort_outputs.reserve(pinned_outputs.size());
+  for (const auto& tensor : pinned_outputs) {
+    auto ort_val_res = tensorToOrtValue(tensor, impl_->cpu_memory_info);
+    if (!ort_val_res.isOk()) {
+      return Status::failure(ort_val_res.error());
+    }
+    ort_outputs.push_back(std::move(ort_val_res).value());
+  }
+
+  try {
+    Ort::RunOptions run_opts{nullptr};
+    impl_->session->Run(run_opts, impl_->input_name_ptrs.data(), ort_inputs.data(),
+                        ort_inputs.size(), impl_->output_name_ptrs.data(), ort_outputs.data(),
+                        ort_outputs.size());
+    return Status::ok();
+  } catch (const Ort::Exception& e) {
+    return Status::failure(StatusCode::BACKEND_ERROR, e.what());
+  } catch (const std::exception& e) {
+    return Status::failure(StatusCode::INTERNAL_ERROR, e.what());
+  }
+}
+
+Result<std::vector<Tensor>> InferenceSession::run(
+    const std::unordered_map<std::string, Tensor>& named_inputs) {
+  if (!isValid()) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::INVALID_ARGUMENT,
+                                                "Session is uninitialized or invalid");
+  }
+  if (named_inputs.size() != impl_->model_info.inputs.size()) {
+    return Result<std::vector<Tensor>>::failure(
+        StatusCode::INVALID_ARGUMENT,
+        "Number of named input tensors does not match model input count");
+  }
+
+  std::vector<Tensor> ordered_inputs(impl_->model_info.inputs.size());
+  for (const auto& [name, tensor] : named_inputs) {
+    auto idx_res = impl_->model_info.getInputIndex(name);
+    if (!idx_res.isOk()) {
+      return Result<std::vector<Tensor>>::failure(idx_res.error());
+    }
+    ordered_inputs[idx_res.value()] = tensor;
+  }
+
+  return run(std::span<const Tensor>(ordered_inputs));
+}
+
+Result<TaskHandle<Result<std::vector<Tensor>>>> InferenceSession::runAsync(
+    ThreadPool& pool, std::span<const Tensor> inputs) {
+  if (!isValid()) {
+    return Result<TaskHandle<Result<std::vector<Tensor>>>>::failure(
+        StatusCode::INVALID_ARGUMENT, "Session is uninitialized or invalid");
+  }
+
+  // Capture shallow Tensor copies immediately on the calling thread so underlying
+  // ArenaStorage / PooledArenaStorage stays pinned until the worker finishes.
+  std::vector<Tensor> pinned_inputs(inputs.begin(), inputs.end());
+
+  return pool.submit(
+      [this, captured_inputs = std::move(pinned_inputs)]() -> Result<std::vector<Tensor>> {
+        return this->run(std::span<const Tensor>(captured_inputs));
+      });
+}
+
+Result<TaskHandle<Result<std::vector<Tensor>>>> InferenceSession::runAsync(
+    ThreadPool& pool, std::span<const Tensor> inputs, MemoryPool& output_pool) {
+  if (!isValid()) {
+    return Result<TaskHandle<Result<std::vector<Tensor>>>>::failure(
+        StatusCode::INVALID_ARGUMENT, "Session is uninitialized or invalid");
+  }
+
+  std::vector<Tensor> pinned_inputs(inputs.begin(), inputs.end());
+
+  return pool.submit([this, &output_pool,
+                      captured_inputs = std::move(pinned_inputs)]() -> Result<std::vector<Tensor>> {
+    return this->run(std::span<const Tensor>(captured_inputs), output_pool);
+  });
+}
+
+Result<TaskHandle<Status>> InferenceSession::runAsync(ThreadPool& pool,
+                                                      std::span<const Tensor> inputs,
+                                                      std::span<Tensor> outputs) {
+  if (!isValid()) {
+    return Result<TaskHandle<Status>>::failure(StatusCode::INVALID_ARGUMENT,
+                                               "Session is uninitialized or invalid");
+  }
+
+  std::vector<Tensor> pinned_inputs(inputs.begin(), inputs.end());
+  std::vector<Tensor> pinned_outputs(outputs.begin(), outputs.end());
+
+  return pool.submit([this, captured_inputs = std::move(pinned_inputs),
+                      captured_outputs = std::move(pinned_outputs)]() mutable -> Status {
+    return this->run(std::span<const Tensor>(captured_inputs), std::span<Tensor>(captured_outputs));
+  });
 }
 
 Ort::Session& InferenceSession::getOrtSession() {

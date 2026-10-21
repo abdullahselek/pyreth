@@ -2,15 +2,18 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <pyreth/backend.hpp>
 #include <pyreth/common.hpp>
 #include <pyreth/model_info.hpp>
 #include <pyreth/result.hpp>
 #include <pyreth/runtime.hpp>
+#include <pyreth/thread_pool.hpp>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace Ort {
@@ -291,6 +294,83 @@ public:
    * @brief Zero-overhead validation of runtime input tensors against the cached ModelInfo schema.
    */
   [[nodiscard]] Status validateInputs(std::span<const Tensor> inputs) const noexcept;
+
+  /**
+   * @brief Executes synchronous zero-copy inference on positional input tensors.
+   *
+   * Input `Tensor` storage is pinned for the entire execution duration and wrapped
+   * via `CreateTensorWithDataAsOrtValue` without copying. Returned output `Tensor`s
+   * take zero-copy ownership of the resulting `Ort::Value` buffers.
+   */
+  [[nodiscard]] Result<std::vector<Tensor>> run(std::span<const Tensor> inputs);
+
+  /**
+   * @brief Convenience overload for initializer-list input tensors.
+   */
+  [[nodiscard]] Result<std::vector<Tensor>> run(std::initializer_list<Tensor> inputs) {
+    return run(std::span<const Tensor>(inputs.begin(), inputs.size()));
+  }
+
+  /**
+   * @brief Executes synchronous inference allocating outputs directly inside `output_arena`.
+   *
+   * When output dimensions are static or determinable from symbolic input dimensions,
+   * output tensors are pre-allocated in `output_arena` before execution so ONNX Runtime
+   * writes directly into the 64-byte aligned arena with zero intermediate copy.
+   */
+  [[nodiscard]] Result<std::vector<Tensor>> run(std::span<const Tensor> inputs,
+                                                ArenaAllocator& output_arena);
+
+  /**
+   * @brief Executes synchronous inference allocating outputs from a leased arena in `output_pool`.
+   */
+  [[nodiscard]] Result<std::vector<Tensor>> run(std::span<const Tensor> inputs,
+                                                MemoryPool& output_pool);
+
+  /**
+   * @brief Executes synchronous in-place zero-copy inference into pre-allocated output tensors.
+   *
+   * Both `inputs` and `outputs` remain pinned for the entire execution duration and are
+   * bound directly via `CreateTensorWithDataAsOrtValue`.
+   */
+  [[nodiscard]] Status run(std::span<const Tensor> inputs, std::span<Tensor> outputs);
+
+  /**
+   * @brief Executes synchronous zero-copy inference using named input tensors.
+   */
+  [[nodiscard]] Result<std::vector<Tensor>> run(
+      const std::unordered_map<std::string, Tensor>& named_inputs);
+
+  /**
+   * @brief Dispatches zero-copy inference asynchronously onto a Pyreth ThreadPool.
+   *
+   * Shallow `Tensor` handles are captured immediately on the calling thread, ensuring
+   * all underlying `TensorStorage` / `ArenaAllocator` instances remain pinned until the
+   * worker thread completes execution.
+   */
+  [[nodiscard]] Result<TaskHandle<Result<std::vector<Tensor>>>> runAsync(
+      ThreadPool& pool, std::span<const Tensor> inputs);
+
+  /**
+   * @brief Convenience overload for asynchronous inference with initializer-list inputs.
+   */
+  [[nodiscard]] Result<TaskHandle<Result<std::vector<Tensor>>>> runAsync(
+      ThreadPool& pool, std::initializer_list<Tensor> inputs) {
+    return runAsync(pool, std::span<const Tensor>(inputs.begin(), inputs.size()));
+  }
+
+  /**
+   * @brief Dispatches asynchronous inference onto `pool` with outputs backed by `output_pool`.
+   */
+  [[nodiscard]] Result<TaskHandle<Result<std::vector<Tensor>>>> runAsync(
+      ThreadPool& pool, std::span<const Tensor> inputs, MemoryPool& output_pool);
+
+  /**
+   * @brief Dispatches asynchronous in-place zero-copy inference into pre-allocated output tensors.
+   */
+  [[nodiscard]] Result<TaskHandle<Status>> runAsync(ThreadPool& pool,
+                                                    std::span<const Tensor> inputs,
+                                                    std::span<Tensor> outputs);
 
   /**
    * @brief Direct mutable access to the underlying Ort::Session.
