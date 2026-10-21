@@ -5,6 +5,7 @@
 #include <memory>
 #include <pyreth/backend.hpp>
 #include <pyreth/common.hpp>
+#include <pyreth/model_info.hpp>
 #include <pyreth/result.hpp>
 #include <pyreth/runtime.hpp>
 #include <span>
@@ -234,12 +235,12 @@ public:
   /**
    * @brief Returns the number of model inputs.
    */
-  [[nodiscard]] size_t getInputCount() const;
+  [[nodiscard]] size_t getInputCount() const noexcept;
 
   /**
    * @brief Returns the number of model outputs.
    */
-  [[nodiscard]] size_t getOutputCount() const;
+  [[nodiscard]] size_t getOutputCount() const noexcept;
 
   /**
    * @brief Returns the names of all model inputs in index order.
@@ -250,6 +251,46 @@ public:
    * @brief Returns the names of all model outputs in index order.
    */
   [[nodiscard]] std::vector<std::string> getOutputNames() const;
+
+  /**
+   * @brief Returns the cached ModelInfo metadata and IO schema for this session.
+   */
+  [[nodiscard]] const ModelInfo& getModelInfo() const noexcept;
+
+  /**
+   * @brief Returns cached metadata for all model inputs in positional order.
+   */
+  [[nodiscard]] const std::vector<TensorInfo>& getInputs() const noexcept;
+
+  /**
+   * @brief Returns cached metadata for all model outputs in positional order.
+   */
+  [[nodiscard]] const std::vector<TensorInfo>& getOutputs() const noexcept;
+
+  /**
+   * @brief Retrieves the TensorInfo for a specific model input by index.
+   */
+  [[nodiscard]] Result<TensorInfo> getInputInfo(size_t index) const noexcept;
+
+  /**
+   * @brief Retrieves the TensorInfo for a specific model input by name.
+   */
+  [[nodiscard]] Result<TensorInfo> getInputInfo(std::string_view name) const noexcept;
+
+  /**
+   * @brief Retrieves the TensorInfo for a specific model output by index.
+   */
+  [[nodiscard]] Result<TensorInfo> getOutputInfo(size_t index) const noexcept;
+
+  /**
+   * @brief Retrieves the TensorInfo for a specific model output by name.
+   */
+  [[nodiscard]] Result<TensorInfo> getOutputInfo(std::string_view name) const noexcept;
+
+  /**
+   * @brief Zero-overhead validation of runtime input tensors against the cached ModelInfo schema.
+   */
+  [[nodiscard]] Status validateInputs(std::span<const Tensor> inputs) const noexcept;
 
   /**
    * @brief Direct mutable access to the underlying Ort::Session.

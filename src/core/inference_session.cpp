@@ -32,6 +32,61 @@ static OrtLoggingLevel toOrtLoggingLevel(LogLevel level) noexcept {
   return ORT_LOGGING_LEVEL_WARNING;
 }
 
+static DataType fromOrtDataType(ONNXTensorElementDataType ort_type) noexcept {
+  switch (ort_type) {
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
+      return DataType::Float32;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+      return DataType::Float16;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:
+      return DataType::BFloat16;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:
+      return DataType::Float64;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
+      return DataType::Int8;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
+      return DataType::UInt8;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16:
+      return DataType::Int16;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16:
+      return DataType::UInt16;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
+      return DataType::Int32;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32:
+      return DataType::UInt32;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
+      return DataType::Int64;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT64:
+      return DataType::UInt64;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
+      return DataType::Bool;
+    default:
+      return DataType::Float32;
+  }
+}
+
+static TensorInfo extractTensorInfo(const char* name, const Ort::TypeInfo& type_info) {
+  TensorInfo info;
+  info.name = name ? name : "";
+  if (type_info.GetONNXType() == ONNX_TYPE_TENSOR) {
+    auto tensor_info = type_info.GetTensorTypeAndShapeInfo();
+    info.dtype = fromOrtDataType(tensor_info.GetElementType());
+    info.shape = tensor_info.GetShape();
+    const size_t dim_count = tensor_info.GetDimensionsCount();
+    info.symbolic_dims.resize(dim_count);
+    if (dim_count > 0) {
+      std::vector<const char*> sym_ptrs(dim_count, nullptr);
+      tensor_info.GetSymbolicDimensions(sym_ptrs.data(), dim_count);
+      for (size_t d = 0; d < dim_count; ++d) {
+        if (sym_ptrs[d] != nullptr) {
+          info.symbolic_dims[d] = sym_ptrs[d];
+        }
+      }
+    }
+  }
+  return info;
+}
+
 static Result<Ort::SessionOptions> configureSessionOptions(
     const SessionConfig& config, std::vector<ExecutionProvider>& active_providers) {
   Ort::SessionOptions opts;
@@ -183,30 +238,69 @@ struct InferenceSession::Impl {
   std::unique_ptr<Ort::Session> session;
   SessionConfig config;
   std::vector<ExecutionProvider> active_providers;
-  std::string model_path;
+  ModelInfo model_info;
   std::vector<std::string> input_names;
   std::vector<std::string> output_names;
 
-  void populateIoNames() {
+  void populateModelInfo() {
     if (!session) {
       return;
     }
     Ort::AllocatorWithDefaultOptions allocator;
 
+    // Extract model-level metadata
+    try {
+      Ort::ModelMetadata meta = session->GetModelMetadata();
+      if (auto prod = meta.GetProducerNameAllocated(allocator)) {
+        model_info.producer_name = prod.get();
+      }
+      if (auto gname = meta.GetGraphNameAllocated(allocator)) {
+        model_info.graph_name = gname.get();
+      }
+      if (auto dom = meta.GetDomainAllocated(allocator)) {
+        model_info.domain = dom.get();
+      }
+      if (auto desc = meta.GetDescriptionAllocated(allocator)) {
+        model_info.description = desc.get();
+      }
+      if (auto gdesc = meta.GetGraphDescriptionAllocated(allocator)) {
+        model_info.graph_description = gdesc.get();
+      }
+      model_info.version = meta.GetVersion();
+
+      auto keys = meta.GetCustomMetadataMapKeysAllocated(allocator);
+      for (const auto& key_ptr : keys) {
+        if (key_ptr) {
+          auto val_ptr = meta.LookupCustomMetadataMapAllocated(key_ptr.get(), allocator);
+          model_info.custom_metadata[key_ptr.get()] = val_ptr ? val_ptr.get() : "";
+        }
+      }
+    } catch (...) {
+      // Metadata fields are optional in ONNX models
+    }
+
+    // Extract input tensor metadata
     const size_t in_count = session->GetInputCount();
     input_names.clear();
     input_names.reserve(in_count);
+    model_info.inputs.clear();
+    model_info.inputs.reserve(in_count);
     for (size_t i = 0; i < in_count; ++i) {
       auto name = session->GetInputNameAllocated(i, allocator);
       input_names.emplace_back(name.get());
+      model_info.inputs.push_back(extractTensorInfo(name.get(), session->GetInputTypeInfo(i)));
     }
 
+    // Extract output tensor metadata
     const size_t out_count = session->GetOutputCount();
     output_names.clear();
     output_names.reserve(out_count);
+    model_info.outputs.clear();
+    model_info.outputs.reserve(out_count);
     for (size_t i = 0; i < out_count; ++i) {
       auto name = session->GetOutputNameAllocated(i, allocator);
       output_names.emplace_back(name.get());
+      model_info.outputs.push_back(extractTensorInfo(name.get(), session->GetOutputTypeInfo(i)));
     }
   }
 };
@@ -244,8 +338,8 @@ Result<InferenceSession> InferenceSession::create(std::string_view model_path,
     impl->session = std::move(session);
     impl->config = config;
     impl->active_providers = std::move(active_providers);
-    impl->model_path = std::string(model_path);
-    impl->populateIoNames();
+    impl->model_info.model_path = std::string(model_path);
+    impl->populateModelInfo();
 
     return Result<InferenceSession>::success(InferenceSession(std::move(impl)));
   } catch (const Ort::Exception& e) {
@@ -276,7 +370,7 @@ Result<InferenceSession> InferenceSession::create(std::span<const uint8_t> model
     impl->session = std::move(session);
     impl->config = config;
     impl->active_providers = std::move(active_providers);
-    impl->populateIoNames();
+    impl->populateModelInfo();
 
     return Result<InferenceSession>::success(InferenceSession(std::move(impl)));
   } catch (const Ort::Exception& e) {
@@ -301,15 +395,15 @@ const std::vector<ExecutionProvider>& InferenceSession::getActiveProviders() con
 }
 
 std::string_view InferenceSession::getModelPath() const noexcept {
-  return impl_ ? std::string_view(impl_->model_path) : std::string_view{};
+  return impl_ ? std::string_view(impl_->model_info.model_path) : std::string_view{};
 }
 
-size_t InferenceSession::getInputCount() const {
-  return impl_ ? impl_->input_names.size() : 0;
+size_t InferenceSession::getInputCount() const noexcept {
+  return impl_ ? impl_->model_info.inputs.size() : 0;
 }
 
-size_t InferenceSession::getOutputCount() const {
-  return impl_ ? impl_->output_names.size() : 0;
+size_t InferenceSession::getOutputCount() const noexcept {
+  return impl_ ? impl_->model_info.outputs.size() : 0;
 }
 
 std::vector<std::string> InferenceSession::getInputNames() const {
@@ -318,6 +412,66 @@ std::vector<std::string> InferenceSession::getInputNames() const {
 
 std::vector<std::string> InferenceSession::getOutputNames() const {
   return impl_ ? impl_->output_names : std::vector<std::string>{};
+}
+
+const ModelInfo& InferenceSession::getModelInfo() const noexcept {
+  static const ModelInfo empty_info{};
+  return impl_ ? impl_->model_info : empty_info;
+}
+
+const std::vector<TensorInfo>& InferenceSession::getInputs() const noexcept {
+  static const std::vector<TensorInfo> empty_inputs{};
+  return impl_ ? impl_->model_info.inputs : empty_inputs;
+}
+
+const std::vector<TensorInfo>& InferenceSession::getOutputs() const noexcept {
+  static const std::vector<TensorInfo> empty_outputs{};
+  return impl_ ? impl_->model_info.outputs : empty_outputs;
+}
+
+Result<TensorInfo> InferenceSession::getInputInfo(size_t index) const noexcept {
+  if (!impl_ || index >= impl_->model_info.inputs.size()) {
+    return Result<TensorInfo>::failure(StatusCode::INVALID_ARGUMENT, "Input index out of range");
+  }
+  return Result<TensorInfo>::success(impl_->model_info.inputs[index]);
+}
+
+Result<TensorInfo> InferenceSession::getInputInfo(std::string_view name) const noexcept {
+  if (!impl_) {
+    return Result<TensorInfo>::failure(StatusCode::INVALID_ARGUMENT,
+                                       "Session is uninitialized or invalid");
+  }
+  const auto* info = impl_->model_info.findInput(name);
+  if (!info) {
+    return Result<TensorInfo>::failure(StatusCode::INVALID_ARGUMENT, "Unknown model input name");
+  }
+  return Result<TensorInfo>::success(*info);
+}
+
+Result<TensorInfo> InferenceSession::getOutputInfo(size_t index) const noexcept {
+  if (!impl_ || index >= impl_->model_info.outputs.size()) {
+    return Result<TensorInfo>::failure(StatusCode::INVALID_ARGUMENT, "Output index out of range");
+  }
+  return Result<TensorInfo>::success(impl_->model_info.outputs[index]);
+}
+
+Result<TensorInfo> InferenceSession::getOutputInfo(std::string_view name) const noexcept {
+  if (!impl_) {
+    return Result<TensorInfo>::failure(StatusCode::INVALID_ARGUMENT,
+                                       "Session is uninitialized or invalid");
+  }
+  const auto* info = impl_->model_info.findOutput(name);
+  if (!info) {
+    return Result<TensorInfo>::failure(StatusCode::INVALID_ARGUMENT, "Unknown model output name");
+  }
+  return Result<TensorInfo>::success(*info);
+}
+
+Status InferenceSession::validateInputs(std::span<const Tensor> inputs) const noexcept {
+  if (!isValid()) {
+    return Status::failure(StatusCode::INVALID_ARGUMENT, "Session is uninitialized or invalid");
+  }
+  return impl_->model_info.validateInputs(inputs);
 }
 
 Ort::Session& InferenceSession::getOrtSession() {
