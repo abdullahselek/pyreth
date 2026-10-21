@@ -26,6 +26,8 @@ include(cmake/OnnxRuntime.cmake)
 add_library(EngineCore STATIC
     src/core/pyreth.cpp
     src/core/backend.cpp
+    src/core/runtime.cpp
+    src/core/inference_session.cpp
     src/core/thread_pool.cpp
     src/core/memory_pool.cpp
     src/core/tensor.cpp

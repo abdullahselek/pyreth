@@ -2,8 +2,10 @@
 
 #include <pyreth/backend.hpp>
 #include <pyreth/common.hpp>
+#include <pyreth/inference_session.hpp>
 #include <pyreth/memory_pool.hpp>
 #include <pyreth/result.hpp>
+#include <pyreth/runtime.hpp>
 #include <pyreth/tensor.hpp>
 #include <pyreth/thread_pool.hpp>
 #include <pyreth/work_stealing_queue.hpp>

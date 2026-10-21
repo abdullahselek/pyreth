@@ -4,6 +4,7 @@
 #include <coreml_provider_factory.h>
 #endif
 
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <pyreth/backend.hpp>

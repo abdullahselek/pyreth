@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <onnxruntime_cxx_api.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <pyreth/backend.hpp>
