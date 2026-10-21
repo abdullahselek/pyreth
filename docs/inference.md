@@ -208,7 +208,84 @@ if (!status.isOk()) {
 
 ---
 
-## 7. Move Semantics & Thread Safety
+## 7. Zero-Copy Inference Execution Pipeline
+
+Pyreth bridges `pyreth::Tensor` and ONNX Runtime's `Ort::Value` with **zero intermediate buffer copies** (`include/pyreth/ort_bridge.hpp`) while enforcing strict arena pinning across both synchronous (`run`) and asynchronous (`runAsync`) execution paths.
+
+### Execution Lifecycle Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant Caller as Caller (C++ / Python)
+    participant Arena as ArenaAllocator / MemoryPool
+    participant Session as InferenceSession
+    participant Pool as ThreadPool Worker
+    participant ORT as Ort::Session
+
+    Caller->>Arena: Tensor::create(shape, dtype, arena)
+    Arena-->>Caller: 64-byte SIMD aligned Tensor (arena.pin() -> pinCount = 1)
+    Caller->>Session: run(inputs) / runAsync(pool, inputs)
+    Session->>Session: validateInputs(inputs) against cached ModelInfo
+    Session->>Session: Capture pinned_inputs (pinCount incremented)
+    opt Asynchronous Execution (runAsync)
+        Session->>Pool: Submit task holding pinned_inputs
+    end
+    Session->>ORT: tensorToOrtValue() via CreateTensorWithDataAsOrtValue (zero-copy)
+    ORT->>ORT: Session::Run(ort_inputs, ort_outputs)
+    alt Pre-allocated Arena / Pool Outputs
+        ORT-->>Arena: Writes directly into pre-allocated 64B aligned Arena buffer
+    else ORT-Allocated Outputs
+        ORT-->>Session: tensorFromOrtValue(std::move(ort_val)) wraps pointer in ExternalStorage
+    end
+    Session->>Session: Destroy Ort::Value wrappers, then release pinned_inputs (arena.unpin())
+    Session-->>Caller: Result<std::vector<Tensor>> (Zero-Copy Outputs)
+    Caller->>Arena: Destroy output Tensors -> arena.reset() in O(1)
+```
+
+### Synchronous Execution (`InferenceSession::run`)
+
+1. **Standard Zero-Copy Run**:
+   Wraps input tensors via `CreateTensorWithDataAsOrtValue` and takes zero-copy ownership of output `Ort::Value` buffers via `ExternalStorage`:
+   ```cpp
+   auto x = pyreth::Tensor::create(pyreth::Shape{4, 3, 224, 224}, pyreth::DataType::Float32).value();
+   auto out_res = session.run({x});
+   if (out_res.isOk()) {
+     const pyreth::Tensor& logits = out_res.value()[0];
+   }
+   ```
+
+2. **Arena / MemoryPool Output Pre-Allocation**:
+   When output dimensions are static or determinable from symbolic input dimensions (e.g., `"batch_size"`), Pyreth pre-allocates the output `Tensor` inside your `ArenaAllocator` or `MemoryPool` *before* calling `Ort::Session::Run`, allowing ONNX Runtime to write directly into Pyreth's 64-byte aligned arena memory:
+   ```cpp
+   pyreth::ArenaAllocator arena(4 * 1024 * 1024);
+   auto x = pyreth::Tensor::create(pyreth::Shape{4, 3, 224, 224}, pyreth::DataType::Float32, arena).value();
+   auto outputs = session.run(std::span<const pyreth::Tensor>(&x, 1), arena).value();
+   ```
+
+3. **In-Place Pre-Allocated Output Tensors**:
+   ```cpp
+   auto y = pyreth::Tensor::create(pyreth::Shape{4, 1000}, pyreth::DataType::Float32, arena).value();
+   pyreth::Tensor out_arr[] = {y};
+   pyreth::Status status = session.run(std::span<const pyreth::Tensor>(&x, 1), out_arr);
+   ```
+
+### Asynchronous Execution (`InferenceSession::runAsync`)
+
+`runAsync` dispatches inference onto a `pyreth::ThreadPool` while immediately capturing shallow `Tensor` copies on the calling thread. This guarantees that `ArenaStorage` and `PooledArenaStorage` remain pinned even if the caller's stack frame exits before the worker thread executes the model:
+
+```cpp
+pyreth::ThreadPool thread_pool(4);
+pyreth::MemoryPool mem_pool(8, 1024 * 1024);
+
+auto handle_res = session.runAsync(thread_pool, std::span<const pyreth::Tensor>(&x, 1), mem_pool);
+if (handle_res.isOk()) {
+  auto outputs_res = handle_res.value().get();
+}
+```
+
+---
+
+## 8. Move Semantics & Thread Safety
 
 - **Move-Only**: `InferenceSession` is strictly move-only (`InferenceSession(const InferenceSession&) = delete`). Transfer of session ownership safely relocates underlying ORT resources without reallocation.
 - **Concurrent Inference**: A single `InferenceSession` instance is safe for concurrent inference runs across multiple worker threads once initialized.
