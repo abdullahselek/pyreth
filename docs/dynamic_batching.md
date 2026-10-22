@@ -10,19 +10,51 @@ In online serving workloads, individual client requests typically arrive asynchr
 
 `DynamicBatcher` sits between incoming client requests and `InferenceSession`, coalescing concurrent requests into contiguous batched tensors:
 
-```mermaid
-flowchart TD
-    C1["Client Request 1 (Shape: [1, D])"] --> Q["Pending Request Queue (FIFO)"]
-    C2["Client Request 2 (Shape: [2, D])"] --> Q
-    C3["Client Request K (Shape: [1, D])"] --> Q
-
-    Q --> S{"Scheduler Trigger<br/>(sum(B_i) >= max_batch_size<br/>OR max_batch_delay_ms elapsed)"}
-    S --> M["Arena Input Concatenation<br/>(64-byte SIMD Aligned MemoryPool Lease)<br/>Batched Shape: [sum(B_i), D]"]
-    M --> W["Pyreth ThreadPool Worker<br/>InferenceSession::run(batched_inputs, memory_pool)"]
-    W --> D["Zero-Copy Output Demultiplexing<br/>Tensor::slice(0, offset, offset + B_i)"]
-    D --> R1["Promise 1 -> Tensor [1, Out]"]
-    D --> R2["Promise 2 -> Tensor [2, Out]"]
-    D --> R3["Promise K -> Tensor [1, Out]"]
+```
++------------------------+  +------------------------+  +------------------------+
+| Client Request 1       |  | Client Request 2       |  | Client Request K       |
+| Shape: [1, D]          |  | Shape: [2, D]          |  | Shape: [1, D]          |
++-----------+------------+  +-----------+------------+  +-----------+------------+
+            |                           |                           |
+            +---------------------------+---------------------------+
+                                        |
+                                        v
+                     +-------------------------------------+
+                     |     Pending Request Queue (FIFO)    |
+                     +------------------+------------------+
+                                        |
+                                        v
+                     +-------------------------------------+
+                     |          Scheduler Trigger          |
+                     |  - sum(B_i) >= max_batch_size, OR   |
+                     |  - max_batch_delay_ms elapsed       |
+                     +------------------+------------------+
+                                        |
+                                        v
+                     +-------------------------------------+
+                     |      Arena Input Concatenation      |
+                     | (64B SIMD Aligned MemoryPool Lease) |
+                     |     Batched Shape: [sum(B_i), D]    |
+                     +------------------+------------------+
+                                        |
+                                        v
+                     +-------------------------------------+
+                     |       Pyreth ThreadPool Worker      |
+                     |   InferenceSession::run(batched)    |
+                     +------------------+------------------+
+                                        |
+                                        v
+                     +-------------------------------------+
+                     |   Zero-Copy Output Demultiplexing   |
+                     | Tensor::slice(0, offset, offset+B_i)|
+                     +------------------+------------------+
+                                        |
+            +---------------------------+---------------------------+
+            |                           |                           |
+            v                           v                           v
++------------------------+  +------------------------+  +------------------------+
+| Promise 1 -> [1, Out]  |  | Promise 2 -> [2, Out]  |  | Promise K -> [1, Out]  |
++------------------------+  +------------------------+  +------------------------+
 ```
 
 ---
@@ -41,30 +73,24 @@ A dedicated lightweight scheduler `std::jthread` monitors the request queue usin
 - **Size Trigger (`full_batches`)**: As soon as the accumulated sample count $\sum B_i$ of compatible requests at the head of the queue reaches `max_batch_size` (or the next queued request cannot be merged due to exceeding `max_batch_size` or having different dynamic trailing dimensions), the scheduler wakes up immediately—bypassing the timer—and dispatches the batch.
 - **Latency Window Trigger (`timeout_batches`)**: When the first request enters an empty queue at $t_0$, the scheduler sets a deadline $t_{\text{deadline}} = t_0 + \text{max\_batch\_delay\_ms}$. If `max_batch_size` is not reached before $t_{\text{deadline}}$, the partial batch is flushed immediately upon deadline expiration to bound P99 tail latency.
 
-### 2.3 Sequence Diagram
+### 2.3 Execution Sequence Flow
 
-```mermaid
-sequenceDiagram
-    participant Caller1 as Caller Thread 1
-    participant Caller2 as Caller Thread 2
-    participant Batcher as DynamicBatcher Scheduler
-    participant Pool as ThreadPool Worker
-    participant Arena as MemoryPool Arena
-    participant Session as InferenceSession (ORT)
-
-    Caller1->>Batcher: submit(req1 [1, 4])
-    Note over Batcher: Queue was empty -> start timer (deadline = t0 + max_batch_delay_ms)
-    Caller2->>Batcher: submit(req2 [1, 4])
-    Note over Batcher: Batch reaches max_batch_size (or deadline expires)
-    Batcher->>Pool: submitDetached(executeBatch([req1, req2]))
-    Pool->>Arena: memory_pool.acquire() (input_lease)
-    Pool->>Arena: Tensor::create([2, 4], dtype, *input_lease) + memcpy inputs
-    Pool->>Session: session.run(batched_inputs, memory_pool)
-    Session-->>Pool: batched_outputs ([2, 3] backed by PooledArenaStorage)
-    Note over Pool: input_lease destroyed -> O(1) arena reset
-    Pool->>Pool: Demultiplex via zero-copy Tensor::slice(0, offset, offset + B_i)
-    Pool-->>Caller1: Promise fulfilled (Result<vector<Tensor>> [1, 3])
-    Pool-->>Caller2: Promise fulfilled (Result<vector<Tensor>> [1, 3])
+```
+Caller Thread 1      Caller Thread 2      DynamicBatcher       ThreadPool Worker      InferenceSession
+       |                    |                   |                      |                      |
+       |--- submit(req1) -->|                   |                      |                      |
+       |                    |         [Start timer: t0 + delay]        |                      |
+       |                    |--- submit(req2) ->|                      |                      |
+       |                    |         [Batch full or timeout]          |                      |
+       |                    |                   |--- executeBatch ---->|                      |
+       |                    |                   |                      |--- acquire Arena     |
+       |                    |                   |                      |    + concat inputs   |
+       |                    |                   |                      |--- session.run() --->|
+       |                    |                   |                      |<-- batched_outputs --|
+       |                    |                   |                      |--- reset input Arena |
+       |                    |                   |                      |--- zero-copy slice() |
+       |<-- Promise 1 (slice 0..B1) ------------+----------------------|                      |
+       |                    |<-- Promise 2 (slice B1..B1+B2) ----------|                      |
 ```
 
 ---
