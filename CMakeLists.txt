@@ -70,6 +70,43 @@ else()
   )
 endif()
 
+# Sanitizers (AddressSanitizer, UndefinedBehaviorSanitizer, ThreadSanitizer)
+option(ENABLE_ASAN "Enable AddressSanitizer (ASan)" OFF)
+option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer (UBSan)" OFF)
+option(ENABLE_TSAN "Enable ThreadSanitizer (TSan)" OFF)
+
+if(ENABLE_ASAN AND ENABLE_TSAN)
+  message(FATAL_ERROR "ENABLE_ASAN and ENABLE_TSAN cannot be enabled simultaneously.")
+endif()
+
+set(PYRETH_SANITIZER_FLAGS "")
+if(ENABLE_ASAN)
+  list(APPEND PYRETH_SANITIZER_FLAGS "-fsanitize=address")
+endif()
+if(ENABLE_UBSAN)
+  list(APPEND PYRETH_SANITIZER_FLAGS "-fsanitize=undefined" "-fno-sanitize-recover=all")
+endif()
+if(ENABLE_TSAN)
+  list(APPEND PYRETH_SANITIZER_FLAGS "-fsanitize=thread")
+endif()
+
+if(PYRETH_SANITIZER_FLAGS)
+  if(MSVC)
+    if(ENABLE_ASAN)
+      target_compile_options(EngineCore PUBLIC /fsanitize=address /Zi)
+    endif()
+  else()
+    target_compile_options(EngineCore PUBLIC
+      -fno-omit-frame-pointer
+      -g
+      ${PYRETH_SANITIZER_FLAGS}
+    )
+    target_link_options(EngineCore PUBLIC
+      ${PYRETH_SANITIZER_FLAGS}
+    )
+  endif()
+endif()
+
 # Testing (CTest)
 # BUILD_TESTING defaults to ON (from CTest) so the "Quick Start" flow
 # (cmake -B build && ctest --test-dir build) works out of the box.

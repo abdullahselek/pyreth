@@ -117,11 +117,6 @@ dependencies = [
     { name = "numpy" },
 ]
 
-[package.optional-dependencies]
-test = [
-    { name = "pytest" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -129,11 +124,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "numpy", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=7.0" },
-]
-provides-extras = ["test"]
+requires-dist = [{ name = "numpy", specifier = ">=2.5.4" }]
 
 [package.metadata.requires-dev]
 dev = [

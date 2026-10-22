@@ -187,8 +187,9 @@ public:
     }
     int64_t total = 1;
     for (int64_t d : dims_) {
-      if (d == 0)
+      if (d == 0) {
         return 0;
+      }
       total *= d;
     }
     return total;

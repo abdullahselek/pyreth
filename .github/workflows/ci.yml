@@ -23,7 +23,13 @@ jobs:
       - name: Check C++ code formatting (clang-format)
         run: |
           clang-format --version
-          find include src unittest sandbox python \( -name '*.hpp' -o -name '*.cpp' \) -print0 | xargs -0 clang-format --dry-run --Werror
+          find include src unittest sandbox python benchmarks \( -name '*.hpp' -o -name '*.cpp' \) -print0 | xargs -0 clang-format --dry-run --Werror
+
+      - name: Check C++ static analysis (clang-tidy)
+        run: |
+          clang-tidy --version
+          cmake -B build-tidy -S . -DBUILD_TESTING=OFF -DBUILD_BENCHMARKS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          clang-tidy -p build-tidy src/core/*.cpp
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
@@ -79,3 +85,39 @@ jobs:
         run: |
           uv sync
           uv run pytest
+
+  sanitizers:
+    name: Sanitizers (${{ matrix.name }} on ${{ matrix.os }})
+    needs: [standards]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        include:
+          - name: ASan + UBSan
+            build_type: Debug
+            cmake_flags: -DENABLE_ASAN=ON -DENABLE_UBSAN=ON -DBUILD_BENCHMARKS=OFF
+          - name: TSan
+            build_type: RelWithDebInfo
+            cmake_flags: -DENABLE_TSAN=ON -DBUILD_BENCHMARKS=OFF
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Configure (${{ matrix.name }})
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake -B build-san -S . -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ${{ matrix.cmake_flags }}
+
+      - name: Build (${{ matrix.name }})
+        run: cmake --build build-san --parallel
+
+      - name: Run CTest under ${{ matrix.name }}
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --test-dir build-san --output-on-failure
