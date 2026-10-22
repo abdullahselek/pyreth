@@ -1,20 +1,22 @@
-[build-system]
-requires = ["scikit-build-core>=0.9.0", "nanobind>=2.4.0"]
-build-backend = "scikit_build_core.build"
-
 [project]
 name = "pyreth"
 version = "0.1.0"
 description = "High throughput, low latency parallel processing AI model inference engine."
+authors = [{ name = "Abdullah Selek", email = "abdullahselek.os@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = [
-    "numpy>=2.0",
+keywords = [
+  "inference sdk",
+  "inference engine",
+  "inference framework",
 ]
 
-[project.optional-dependencies]
-test = [
-    "pytest>=7.0",
+[build-system]
+requires = ["scikit-build-core>=0.9.0", "nanobind>=2.4.0"]
+build-backend = "scikit_build_core.build"
+
+dependencies = [
+    "numpy>=2.0",
 ]
 
 [dependency-groups]
