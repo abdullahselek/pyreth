@@ -67,21 +67,22 @@ TEST(ThreadPoolTest, SubmitMoveOnlyType) {
 }
 
 TEST(ThreadPoolTest, SubmitDetachedFireAndForget) {
-  pyreth::ThreadPool pool(2);
   std::atomic<int> counter{0};
   constexpr int N = 100;
+  pyreth::ThreadPool pool(2);
 
   for (int i = 0; i < N; ++i) {
     auto status =
-        pool.submitDetached([&counter]() { counter.fetch_add(1, std::memory_order_relaxed); });
+        pool.submitDetached([&counter]() { counter.fetch_add(1, std::memory_order_acq_rel); });
     EXPECT_TRUE(status.isOk());
   }
 
-  while (counter.load(std::memory_order_relaxed) < N) {
+  while (counter.load(std::memory_order_acquire) < N) {
     std::this_thread::yield();
   }
+  pool.shutdown();
 
-  EXPECT_EQ(counter.load(), N);
+  EXPECT_EQ(counter.load(std::memory_order_acquire), N);
 }
 
 TEST(ThreadPoolTest, SubmissionRejectedPostShutdown) {
@@ -105,29 +106,30 @@ TEST(ThreadPoolTest, ComputeThreadBudget) {
 }
 
 TEST(ThreadPoolTest, WorkStealingAcrossWorkers) {
-  pyreth::ThreadPool pool(4);
   constexpr int SUBTASKS = 256;
   std::atomic<int> completed{0};
+  pyreth::ThreadPool pool(4);
 
   // Submit a root task that spawns child tasks into its local work-stealing deque
   // and waits until at least one peer worker steals a task before returning.
   auto root_res = pool.submit([&pool, &completed]() {
     for (int i = 0; i < SUBTASKS; ++i) {
       (void)pool.submitDetached(
-          [&completed]() { completed.fetch_add(1, std::memory_order_relaxed); });
+          [&completed]() { completed.fetch_add(1, std::memory_order_acq_rel); });
     }
-    while (completed.load(std::memory_order_relaxed) == 0) {
+    while (completed.load(std::memory_order_acquire) == 0) {
       std::this_thread::yield();
     }
   });
   ASSERT_TRUE(root_res.isOk());
   root_res.value().wait();
 
-  while (completed.load(std::memory_order_relaxed) < SUBTASKS) {
+  while (completed.load(std::memory_order_acquire) < SUBTASKS) {
     std::this_thread::yield();
   }
+  pool.shutdown();
 
-  EXPECT_EQ(completed.load(), SUBTASKS);
+  EXPECT_EQ(completed.load(std::memory_order_acquire), SUBTASKS);
 
   auto m = pool.metrics();
   EXPECT_GT(m.tasks_stolen, 0u) << "Child tasks should be stolen across peer worker threads";
@@ -135,10 +137,9 @@ TEST(ThreadPoolTest, WorkStealingAcrossWorkers) {
 
 TEST(ThreadPoolTest, Throughput100kTasksAndLatencyDistribution) {
   constexpr int NUM_TASKS = 100000;
-  pyreth::ThreadPool pool(4);
-
   std::atomic<int> completed{0};
   std::vector<uint64_t> latencies_us(NUM_TASKS);
+  pyreth::ThreadPool pool(4);
 
   auto start_time = std::chrono::steady_clock::now();
 
@@ -149,18 +150,19 @@ TEST(ThreadPoolTest, Throughput100kTasksAndLatencyDistribution) {
       auto dur =
           std::chrono::duration_cast<std::chrono::microseconds>(exec_time - submit_time).count();
       latencies_us[i] = static_cast<uint64_t>(dur);
-      completed.fetch_add(1, std::memory_order_relaxed);
+      completed.fetch_add(1, std::memory_order_acq_rel);
     });
   }
 
-  while (completed.load(std::memory_order_relaxed) < NUM_TASKS) {
+  while (completed.load(std::memory_order_acquire) < NUM_TASKS) {
     std::this_thread::yield();
   }
+  pool.shutdown();
 
   auto total_duration = std::chrono::steady_clock::now() - start_time;
   auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(total_duration).count();
 
-  EXPECT_EQ(completed.load(), NUM_TASKS);
+  EXPECT_EQ(completed.load(std::memory_order_acquire), NUM_TASKS);
 
   // Compute latency percentiles
   std::sort(latencies_us.begin(), latencies_us.end());
