@@ -28,6 +28,7 @@ add_library(EngineCore STATIC
     src/core/backend.cpp
     src/core/runtime.cpp
     src/core/inference_session.cpp
+    src/core/dynamic_batcher.cpp
     src/core/thread_pool.cpp
     src/core/memory_pool.cpp
     src/core/tensor.cpp

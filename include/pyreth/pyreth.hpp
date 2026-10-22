@@ -2,6 +2,7 @@
 
 #include <pyreth/backend.hpp>
 #include <pyreth/common.hpp>
+#include <pyreth/dynamic_batcher.hpp>
 #include <pyreth/inference_session.hpp>
 #include <pyreth/memory_pool.hpp>
 #include <pyreth/model_info.hpp>
