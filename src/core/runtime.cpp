@@ -56,10 +56,12 @@ Status Runtime::init(LogLevel log_level, std::string_view log_id) {
     impl_->log_id = std::string(log_id);
     impl_->env = std::make_unique<Ort::Env>(toOrtLoggingLevel(log_level), impl_->log_id.c_str());
     return Status::ok();
-  } catch (const Ort::Exception& e) {
-    return Status::failure(StatusCode::BACKEND_ERROR, e.what());
-  } catch (const std::exception& e) {
-    return Status::failure(StatusCode::INTERNAL_ERROR, e.what());
+  } catch (const Ort::Exception&) {
+    return Status::failure(StatusCode::BACKEND_ERROR,
+                           "Failed to initialize ONNX Runtime environment");
+  } catch (const std::exception&) {
+    return Status::failure(StatusCode::INTERNAL_ERROR,
+                           "Internal error initializing ONNX Runtime environment");
   }
 }
 

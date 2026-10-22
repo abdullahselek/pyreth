@@ -40,10 +40,12 @@ Result<Ort::Value> tensorToOrtValue(const Tensor& tensor, const Ort::MemoryInfo&
         Ort::Value::CreateTensor(memory_info, const_cast<void*>(tensor.data()), tensor.totalBytes(),
                                  tensor.shape().data(), tensor.shape().rank(), ort_dtype);
     return Result<Ort::Value>::success(std::move(ort_val));
-  } catch (const Ort::Exception& e) {
-    return Result<Ort::Value>::failure(StatusCode::BACKEND_ERROR, e.what());
-  } catch (const std::exception& e) {
-    return Result<Ort::Value>::failure(StatusCode::INTERNAL_ERROR, e.what());
+  } catch (const Ort::Exception&) {
+    return Result<Ort::Value>::failure(StatusCode::BACKEND_ERROR,
+                                       "Failed to create Ort::Value tensor wrapper");
+  } catch (const std::exception&) {
+    return Result<Ort::Value>::failure(StatusCode::INTERNAL_ERROR,
+                                       "Internal error creating Ort::Value tensor wrapper");
   }
 }
 
@@ -245,9 +247,7 @@ static Result<Ort::SessionOptions> configureSessionOptions(
     } else {
       if (!config.allow_provider_fallback) {
         return Result<Ort::SessionOptions>::failure(
-            StatusCode::BACKEND_ERROR, "Failed to append execution provider " +
-                                           std::string(executionProviderToString(provider)) +
-                                           (!err_msg.empty() ? ": " + err_msg : ""));
+            StatusCode::BACKEND_ERROR, "Failed to append requested execution provider");
       }
     }
   }
@@ -388,8 +388,7 @@ Result<InferenceSession> InferenceSession::create(std::string_view model_path,
   std::filesystem::path p(model_path);
   std::error_code ec;
   if (!std::filesystem::exists(p, ec) || ec) {
-    return Result<InferenceSession>::failure(StatusCode::MODEL_NOT_FOUND,
-                                             "Model file not found: " + std::string(model_path));
+    return Result<InferenceSession>::failure(StatusCode::MODEL_NOT_FOUND, "Model file not found");
   }
 
   std::vector<ExecutionProvider> active_providers;
@@ -410,10 +409,12 @@ Result<InferenceSession> InferenceSession::create(std::string_view model_path,
     impl->populateModelInfo();
 
     return Result<InferenceSession>::success(InferenceSession(std::move(impl)));
-  } catch (const Ort::Exception& e) {
-    return Result<InferenceSession>::failure(StatusCode::MODEL_LOAD_FAILED, e.what());
-  } catch (const std::exception& e) {
-    return Result<InferenceSession>::failure(StatusCode::MODEL_LOAD_FAILED, e.what());
+  } catch (const Ort::Exception&) {
+    return Result<InferenceSession>::failure(StatusCode::MODEL_LOAD_FAILED,
+                                             "Failed to load ONNX model file");
+  } catch (const std::exception&) {
+    return Result<InferenceSession>::failure(StatusCode::MODEL_LOAD_FAILED,
+                                             "Failed to load ONNX model file");
   }
 }
 
@@ -441,10 +442,12 @@ Result<InferenceSession> InferenceSession::create(std::span<const uint8_t> model
     impl->populateModelInfo();
 
     return Result<InferenceSession>::success(InferenceSession(std::move(impl)));
-  } catch (const Ort::Exception& e) {
-    return Result<InferenceSession>::failure(StatusCode::MODEL_LOAD_FAILED, e.what());
-  } catch (const std::exception& e) {
-    return Result<InferenceSession>::failure(StatusCode::MODEL_LOAD_FAILED, e.what());
+  } catch (const Ort::Exception&) {
+    return Result<InferenceSession>::failure(StatusCode::MODEL_LOAD_FAILED,
+                                             "Failed to load ONNX model from memory buffer");
+  } catch (const std::exception&) {
+    return Result<InferenceSession>::failure(StatusCode::MODEL_LOAD_FAILED,
+                                             "Failed to load ONNX model from memory buffer");
   }
 }
 
@@ -583,10 +586,12 @@ Result<std::vector<Tensor>> InferenceSession::run(std::span<const Tensor> inputs
       outputs.push_back(std::move(tensor_res).value());
     }
     return Result<std::vector<Tensor>>::success(std::move(outputs));
-  } catch (const Ort::Exception& e) {
-    return Result<std::vector<Tensor>>::failure(StatusCode::BACKEND_ERROR, e.what());
-  } catch (const std::exception& e) {
-    return Result<std::vector<Tensor>>::failure(StatusCode::INTERNAL_ERROR, e.what());
+  } catch (const Ort::Exception&) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::BACKEND_ERROR,
+                                                "ONNX Runtime inference execution failed");
+  } catch (const std::exception&) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::INTERNAL_ERROR,
+                                                "Internal error during inference execution");
   }
 }
 
@@ -664,10 +669,12 @@ Result<std::vector<Tensor>> InferenceSession::run(std::span<const Tensor> inputs
       }
     }
     return Result<std::vector<Tensor>>::success(std::move(outputs));
-  } catch (const Ort::Exception& e) {
-    return Result<std::vector<Tensor>>::failure(StatusCode::BACKEND_ERROR, e.what());
-  } catch (const std::exception& e) {
-    return Result<std::vector<Tensor>>::failure(StatusCode::INTERNAL_ERROR, e.what());
+  } catch (const Ort::Exception&) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::BACKEND_ERROR,
+                                                "ONNX Runtime inference execution failed");
+  } catch (const std::exception&) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::INTERNAL_ERROR,
+                                                "Internal error during inference execution");
   }
 }
 
@@ -744,10 +751,12 @@ Result<std::vector<Tensor>> InferenceSession::run(std::span<const Tensor> inputs
       }
     }
     return Result<std::vector<Tensor>>::success(std::move(outputs));
-  } catch (const Ort::Exception& e) {
-    return Result<std::vector<Tensor>>::failure(StatusCode::BACKEND_ERROR, e.what());
-  } catch (const std::exception& e) {
-    return Result<std::vector<Tensor>>::failure(StatusCode::INTERNAL_ERROR, e.what());
+  } catch (const Ort::Exception&) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::BACKEND_ERROR,
+                                                "ONNX Runtime inference execution failed");
+  } catch (const std::exception&) {
+    return Result<std::vector<Tensor>>::failure(StatusCode::INTERNAL_ERROR,
+                                                "Internal error during inference execution");
   }
 }
 
@@ -803,10 +812,10 @@ Status InferenceSession::run(std::span<const Tensor> inputs, std::span<Tensor> o
                         ort_inputs.size(), impl_->output_name_ptrs.data(), ort_outputs.data(),
                         ort_outputs.size());
     return Status::ok();
-  } catch (const Ort::Exception& e) {
-    return Status::failure(StatusCode::BACKEND_ERROR, e.what());
-  } catch (const std::exception& e) {
-    return Status::failure(StatusCode::INTERNAL_ERROR, e.what());
+  } catch (const Ort::Exception&) {
+    return Status::failure(StatusCode::BACKEND_ERROR, "ONNX Runtime inference execution failed");
+  } catch (const std::exception&) {
+    return Status::failure(StatusCode::INTERNAL_ERROR, "Internal error during inference execution");
   }
 }
 
