@@ -855,8 +855,10 @@ Result<TaskHandle<Result<std::vector<Tensor>>>> InferenceSession::runAsync(
   std::vector<Tensor> pinned_inputs(inputs.begin(), inputs.end());
 
   return pool.submit(
-      [this, captured_inputs = std::move(pinned_inputs)]() -> Result<std::vector<Tensor>> {
-        return this->run(std::span<const Tensor>(captured_inputs));
+      [this, captured_inputs = std::move(pinned_inputs)]() mutable -> Result<std::vector<Tensor>> {
+        auto res = this->run(std::span<const Tensor>(captured_inputs));
+        captured_inputs.clear();
+        return res;
       });
 }
 
@@ -869,10 +871,13 @@ Result<TaskHandle<Result<std::vector<Tensor>>>> InferenceSession::runAsync(
 
   std::vector<Tensor> pinned_inputs(inputs.begin(), inputs.end());
 
-  return pool.submit([this, &output_pool,
-                      captured_inputs = std::move(pinned_inputs)]() -> Result<std::vector<Tensor>> {
-    return this->run(std::span<const Tensor>(captured_inputs), output_pool);
-  });
+  return pool.submit(
+      [this, &output_pool,
+       captured_inputs = std::move(pinned_inputs)]() mutable -> Result<std::vector<Tensor>> {
+        auto res = this->run(std::span<const Tensor>(captured_inputs), output_pool);
+        captured_inputs.clear();
+        return res;
+      });
 }
 
 Result<TaskHandle<Status>> InferenceSession::runAsync(ThreadPool& pool,
@@ -888,7 +893,11 @@ Result<TaskHandle<Status>> InferenceSession::runAsync(ThreadPool& pool,
 
   return pool.submit([this, captured_inputs = std::move(pinned_inputs),
                       captured_outputs = std::move(pinned_outputs)]() mutable -> Status {
-    return this->run(std::span<const Tensor>(captured_inputs), std::span<Tensor>(captured_outputs));
+    auto st =
+        this->run(std::span<const Tensor>(captured_inputs), std::span<Tensor>(captured_outputs));
+    captured_inputs.clear();
+    captured_outputs.clear();
+    return st;
   });
 }
 

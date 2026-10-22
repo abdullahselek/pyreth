@@ -181,8 +181,8 @@ void ThreadPool::workerLoop(size_t worker_id, std::stop_token stop_token) {
   while (!stop_token.stop_requested()) {
     auto task = findTask(worker_id);
     if (task) {
-      (*task)();
       workers_data_[worker_id]->tasks_executed.fetch_add(1, std::memory_order_relaxed);
+      (*task)();
     } else {
       if (stop_token.stop_requested()) {
         break;
@@ -194,8 +194,8 @@ void ThreadPool::workerLoop(size_t worker_id, std::stop_token stop_token) {
 
   // Drain remaining tasks during shutdown
   while (auto task = findTask(worker_id)) {
-    (*task)();
     workers_data_[worker_id]->tasks_executed.fetch_add(1, std::memory_order_relaxed);
+    (*task)();
   }
 
   t_current_worker = nullptr;

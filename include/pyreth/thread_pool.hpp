@@ -299,10 +299,26 @@ public:
       return std::invoke(func, std::move(captured_args)...);
     };
 
-    auto ptask = std::make_shared<std::packaged_task<ReturnType()>>(std::move(bound));
-    auto fut = ptask->get_future();
+    auto promise = std::make_shared<std::promise<ReturnType>>();
+    auto fut = promise->get_future();
+    auto bound_ptr = std::make_shared<decltype(bound)>(std::move(bound));
 
-    MoveOnlyTask task([ptask]() { (*ptask)(); });
+    MoveOnlyTask task([promise, bound_ptr]() mutable {
+      try {
+        if constexpr (std::is_void_v<ReturnType>) {
+          (*bound_ptr)();
+          bound_ptr.reset();
+          promise->set_value();
+        } else {
+          ReturnType result = (*bound_ptr)();
+          bound_ptr.reset();
+          promise->set_value(std::move(result));
+        }
+      } catch (...) {
+        bound_ptr.reset();
+        promise->set_exception(std::current_exception());
+      }
+    });
 
     if (!pushTask(std::move(task))) {
       return Result<TaskHandle<ReturnType>>::failure(StatusCode::QUEUE_FULL,

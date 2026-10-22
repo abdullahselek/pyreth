@@ -257,11 +257,14 @@ struct DynamicBatcher::Impl {
 
   void failBatch(std::vector<PendingRequest>& batch, const Error& err, uint64_t wait_us) noexcept {
     for (auto& req : batch) {
+      req.inputs.clear();
+    }
+    batches_dispatched.fetch_add(1, std::memory_order_release);
+    total_batch_wait_us.fetch_add(wait_us, std::memory_order_release);
+    requests_completed.fetch_add(batch.size(), std::memory_order_release);
+    for (auto& req : batch) {
       req.promise.set_value(Result<std::vector<Tensor>>::failure(err));
     }
-    batches_dispatched.fetch_add(1, std::memory_order_relaxed);
-    total_batch_wait_us.fetch_add(wait_us, std::memory_order_relaxed);
-    requests_completed.fetch_add(batch.size(), std::memory_order_relaxed);
     finishInFlightBatch();
   }
 
@@ -324,14 +327,25 @@ struct DynamicBatcher::Impl {
       batched_inputs.push_back(std::move(batched_tensor));
     }
 
+    // Release per-request input references now that they are concatenated into batched_inputs
+    for (auto& req : batch) {
+      req.inputs.clear();
+    }
+
     // 2. Dispatch a single batched inference run with outputs backed by the MemoryPool
     auto run_res = session->run(std::span<const Tensor>(batched_inputs), *memory_pool);
+    batched_inputs.clear();
+    {
+      auto drop_lease = std::move(input_lease);
+      (void)drop_lease;
+    }
+
     const auto exec_end = std::chrono::steady_clock::now();
     const uint64_t exec_us = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(exec_end - exec_start).count());
 
     if (!run_res.isOk()) {
-      total_execution_us.fetch_add(exec_us, std::memory_order_relaxed);
+      total_execution_us.fetch_add(exec_us, std::memory_order_release);
       failBatch(batch, run_res.error(), wait_us);
       return;
     }
@@ -340,6 +354,9 @@ struct DynamicBatcher::Impl {
     const std::vector<Tensor>& batched_outputs = run_res.value();
     const size_t num_outputs = batched_outputs.size();
     int64_t row_offset = 0;
+
+    std::vector<Result<std::vector<Tensor>>> request_results;
+    request_results.reserve(batch.size());
 
     for (auto& req : batch) {
       const auto req_batch = static_cast<int64_t>(req.batch_size);
@@ -363,23 +380,28 @@ struct DynamicBatcher::Impl {
 
       row_offset += req_batch;
       if (slice_err.isOk()) {
-        req.promise.set_value(Result<std::vector<Tensor>>::success(std::move(req_outputs)));
+        request_results.push_back(Result<std::vector<Tensor>>::success(std::move(req_outputs)));
       } else {
-        req.promise.set_value(Result<std::vector<Tensor>>::failure(slice_err));
+        request_results.push_back(Result<std::vector<Tensor>>::failure(slice_err));
       }
     }
 
-    // 4. Record batch telemetry
-    batches_dispatched.fetch_add(1, std::memory_order_relaxed);
+    // 4. Record batch telemetry BEFORE fulfilling request promises so callers waking from
+    // TaskHandle::get() / wait() immediately observe consistent metrics.
+    batches_dispatched.fetch_add(1, std::memory_order_release);
     if (is_full_batch) {
-      full_batches.fetch_add(1, std::memory_order_relaxed);
+      full_batches.fetch_add(1, std::memory_order_release);
     } else {
-      timeout_batches.fetch_add(1, std::memory_order_relaxed);
+      timeout_batches.fetch_add(1, std::memory_order_release);
     }
-    total_batched_samples.fetch_add(total_batch_samples, std::memory_order_relaxed);
-    requests_completed.fetch_add(batch.size(), std::memory_order_relaxed);
-    total_batch_wait_us.fetch_add(wait_us, std::memory_order_relaxed);
-    total_execution_us.fetch_add(exec_us, std::memory_order_relaxed);
+    total_batched_samples.fetch_add(total_batch_samples, std::memory_order_release);
+    requests_completed.fetch_add(batch.size(), std::memory_order_release);
+    total_batch_wait_us.fetch_add(wait_us, std::memory_order_release);
+    total_execution_us.fetch_add(exec_us, std::memory_order_release);
+
+    for (size_t i = 0; i < batch.size(); ++i) {
+      batch[i].promise.set_value(std::move(request_results[i]));
+    }
 
     finishInFlightBatch();
   }
@@ -643,15 +665,15 @@ DynamicBatcherMetrics DynamicBatcher::metrics() const noexcept {
   if (!impl_) {
     return m;
   }
-  m.requests_submitted = impl_->requests_submitted.load(std::memory_order_relaxed);
-  m.requests_completed = impl_->requests_completed.load(std::memory_order_relaxed);
-  m.requests_rejected = impl_->requests_rejected.load(std::memory_order_relaxed);
-  m.batches_dispatched = impl_->batches_dispatched.load(std::memory_order_relaxed);
-  m.full_batches = impl_->full_batches.load(std::memory_order_relaxed);
-  m.timeout_batches = impl_->timeout_batches.load(std::memory_order_relaxed);
-  m.total_batched_samples = impl_->total_batched_samples.load(std::memory_order_relaxed);
-  m.total_batch_wait_us = impl_->total_batch_wait_us.load(std::memory_order_relaxed);
-  m.total_execution_us = impl_->total_execution_us.load(std::memory_order_relaxed);
+  m.requests_submitted = impl_->requests_submitted.load(std::memory_order_acquire);
+  m.requests_completed = impl_->requests_completed.load(std::memory_order_acquire);
+  m.requests_rejected = impl_->requests_rejected.load(std::memory_order_acquire);
+  m.batches_dispatched = impl_->batches_dispatched.load(std::memory_order_acquire);
+  m.full_batches = impl_->full_batches.load(std::memory_order_acquire);
+  m.timeout_batches = impl_->timeout_batches.load(std::memory_order_acquire);
+  m.total_batched_samples = impl_->total_batched_samples.load(std::memory_order_acquire);
+  m.total_batch_wait_us = impl_->total_batch_wait_us.load(std::memory_order_acquire);
+  m.total_execution_us = impl_->total_execution_us.load(std::memory_order_acquire);
   return m;
 }
 
