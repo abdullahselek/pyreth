@@ -7,164 +7,321 @@
 ╚═╝        ╚═╝   ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝
 ```
 
-High throughput, low latency parallel processing AI model inference engine.
+**High throughput, low latency parallel processing AI model inference engine in C++20 and Python.**
+
+---
 
 ## Overview
 
-pyreth is designed to serve AI model inference with minimal latency and maximum throughput. It is built around a lightweight core (`EngineCore`) that will grow into a parallel inference pipeline (batching, scheduling, GPU/Metal dispatch), keeping the hot path lock-free and cache-friendly.
+**Pyreth** is a production-grade AI inference runtime engineered to eliminate memory allocation bottlenecks, lock contention, and Python Global Interpreter Lock (GIL) serialization on the inference hot path. Built around a zero-copy C++20 core (`EngineCore`) with `nanobind` Python bindings, Pyreth pairs a lock-free work-stealing scheduler and 64-byte SIMD-aligned memory arenas with ONNX Runtime graph execution and dynamic request batching.
+
+### Architecture
+
+```
++-----------------------------------------------------------------------------------+
+|                        CLIENT APPLICATIONS (C++20 / Python)                       |
+|      np.ndarray <--(Zero-Copy DLPack/Buffer)--> pyreth::Tensor (64B Aligned)      |
++-----------------------------------------+-----------------------------------------+
+                                          |
+                          [nb::gil_scoped_release in Python]
+                                          |
+                                          v
++-----------------------------------------------------------------------------------+
+|                                  ENGINE CORE                                      |
+|                                                                                   |
+|  +-----------------------------------------------------------------------------+  |
+|  | DynamicBatcher (Latency-Bounded Request Coalescing & Zero-Copy Demux)       |  |
+|  | - Coalesces requests up to max_batch_size or max_batch_delay_ms/us          |  |
+|  | - Concatenates batch in pooled 64B Arena & slices outputs in O(1)           |  |
+|  +--------------------------------------+--------------------------------------+  |
+|                                         |                                         |
+|                                         v                                         |
+|  +-----------------------------------------------------------------------------+  |
+|  | ThreadPool (Lock-Free Chase-Lev Work-Stealing Deques + WorkerParker)        |  |
+|  | - Owner LIFO push/pop (4.5ns) | Thief FIFO steal (4.7ns) | Zero-spin park   |  |
+|  +------------------+---------------------------------------+------------------+  |
+|                     |                                       |                     |
+|                     v                                       v                     |
+|  +-------------------------------------+ +-------------------------------------+  |
+|  | Memory Hierarchy                    | | InferenceSession (ONNX Runtime)     |  |
+|  | - ArenaAllocator (2.5ns bump, O(1)) | | - Cached ModelInfo & TensorInfo     |  |
+|  | - MemoryPool (RAII Lease recycling) | | - Zero-copy Ort::Value tensor bridge|  |
+|  | - Atomic pin-count lifetime safety  | | - CPU / CoreML / CUDA / TensorRT    |  |
+|  +-------------------------------------+ +-------------------------------------+  |
++-----------------------------------------------------------------------------------+
+```
+
+### Key Highlights
+
+| Subsystem | Design | Measured Performance |
+| :--- | :--- | :--- |
+| **Memory Subsystem** | 64-byte SIMD-aligned [`ArenaAllocator`](docs/memory.md) & [`MemoryPool`](docs/memory.md) with atomic pin counting and $O(1)$ pointer-bump reset | **2.48 ns** per allocation (**up to 29.4x faster** than `posix_memalign`/`free`) |
+| **Lock-Free Concurrency** | Bounded Chase-Lev [`WorkStealingQueue`](docs/parallelism.md), 3-state semaphore [`WorkerParker`](docs/parallelism.md), and [`ThreadPool`](docs/parallelism.md) | **4.52 ns** LIFO push/pop (**221M ops/s**); **288M ops/s** on 256-task bursts |
+| **Zero-Copy Tensor & NumPy Bridge** | [`pyreth::Tensor`](docs/tensor.md) with `OWNED`, `ARENA`, `POOLED`, and `EXTERNAL` storage; bidirectional zero-copy [`nanobind::ndarray`](docs/python_api.md) bridge | **36.8 ns** zero-copy buffer wrap; **0 byte copies** across Python <-> C++ <-> ORT |
+| **Inference & Dynamic Batching** | [`InferenceSession`](docs/inference.md) & [`DynamicBatcher`](docs/dynamic_batching.md) with full Python GIL release (`nb::gil_scoped_release`) | **576k req/s** (`1.67 us` P50) sync; **14.2M samples/s** async; **86.8k req/s** concurrent dynamic batching |
+
+Full benchmark methodology and latency/throughput tables across batch sizes 1 to 64 are published in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
+
+---
 
 ## Project Layout
 
 ```
-├── cmake/            # CMake discovery and helper modules
-├── docs/             # Architecture and guidelines documentation
-├── include/pyreth/   # Public C++ API headers
-├── python/pyreth/    # Python package & nanobind bindings
-├── sandbox/          # Dev runner / manual integration checks
-├── src/core/         # Engine core implementation
-├── tests/python/     # Python pytest integration tests
-├── unittest/         # C++ GTest suite
-├── CMakeLists.txt    # CMake build configuration
-├── pyproject.toml    # Python packaging configuration (uv / scikit-build-core)
-└── build/            # Build artifacts (gitignored)
+├── benchmarks/       # C++ Google Benchmark suite & Python serving benchmarks
+├── cmake/            # CMake discovery and ONNX Runtime provisioning modules
+├── docs/             # Subsystem architecture & API guides
+├── include/pyreth/   # Public C++20 API headers
+├── python/           # nanobind C++ extension (pyreth_core.cpp) & pyreth package
+├── sandbox/          # C++ development runner & integration smoke executable
+├── src/core/         # Core C++ engine implementation
+├── tests/python/     # Python pytest integration & concurrency test suite
+├── unittest/         # C++ GoogleTest unit test suite
+├── CMakeLists.txt    # Root CMake build configuration
+└── pyproject.toml    # Python packaging configuration (uv / scikit-build-core)
 ```
 
-## Requirements
+---
 
-- CMake >= 3.25
-- C++20 compiler (Apple Clang / Clang, GCC, or MSVC)
-- `clang-format` (for C++ code formatting)
-- [uv](https://docs.astral.sh/uv/) (for Python environment and dependency management)
-- Python >= 3.13 (managed automatically by `uv`)
+## Installation Guide
+
+### Prerequisites
+
+- **CMake** >= 3.25
+- **C++20 Compiler**:
+  - **macOS (Apple Silicon / Intel)**: Xcode Command Line Tools (`AppleClang` >= 15)
+  - **Linux (Ubuntu / Debian x86_64 & ARM64)**: `clang` >= 16 or `g++` >= 12, `build-essential`, `ninja-build`
+  - **Windows (x64)**: Visual Studio 2022 (MSVC v143)
+- **Python Ecosystem**: [uv](https://docs.astral.sh/uv/) (automatically manages Python >= 3.13, `nanobind`, `scikit-build-core`, and `numpy`)
+
+> **Note**: Prebuilt ONNX Runtime v1.19.2 libraries, GoogleTest v1.15.2, and Google Benchmark v1.9.1 are fetched automatically by CMake during configuration—no manual system installation is required.
+
+### 1. Python Installation (`uv` / `pip`)
+
+#### Using `uv` (Recommended for Development & Serving)
+
+```sh
+# Clone the repository
+git clone https://github.com/abdullahselek/pyreth.git
+cd pyreth
+
+# Create the virtual environment, compile the C++20 nanobind extension, and install dependencies
+uv sync
+
+# Verify installation
+uv run python -c "import pyreth; print('Pyreth:', pyreth.__version__, '| ORT:', pyreth.get_runtime_version(), '| Best Provider:', pyreth.get_best_backend())"
+```
+
+#### Building a Self-Contained Python Wheel
+
+```sh
+uv build --wheel
+uv pip install dist/pyreth-*.whl
+```
+
+### 2. C++ Installation & Building from Source
+
+```sh
+# 1. Configure Release build (fetches ONNX Runtime, GoogleTest, and Google Benchmark)
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+# 2. Build all targets in parallel (libEngineCore.a, Sandbox, pyreth_tests, pyreth_benchmarks)
+cmake --build build --parallel
+
+# 3. Run the C++ unit test suite (124 tests)
+ctest --test-dir build --output-on-failure
+```
+
+#### CMake Configuration Options
+
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `BUILD_TESTING` | `ON` | Build the GoogleTest unit test suite (`pyreth_tests`) |
+| `BUILD_BENCHMARKS` | `ON` | Build the Google Benchmark micro-benchmark suite (`pyreth_benchmarks`) |
+| `BUILD_PYTHON_BINDINGS` | `OFF` | Build the `nanobind` `_core` Python extension module (`ON` automatically under `uv`/`pip`) |
+| `ENABLE_ASAN` | `OFF` | Instrument targets with Clang/GCC/MSVC AddressSanitizer (`-fsanitize=address`) |
+| `ENABLE_UBSAN` | `OFF` | Instrument targets with UndefinedBehaviorSanitizer (`-fsanitize=undefined`) |
+| `ENABLE_TSAN` | `OFF` | Instrument targets with ThreadSanitizer (`-fsanitize=thread`) |
+
+---
 
 ## Quick Start
 
-Configure, build, and run the unit tests in three steps:
+### Python Quick Start
 
-```sh
-cmake -B build              # configure (GoogleTest is fetched on first run)
-cmake --build build         # build the library, sandbox, and tests
-ctest --test-dir build      # run the unit tests
+```python
+from concurrent.futures import ThreadPoolExecutor
+import numpy as np
+from pyreth import (
+    ArenaAllocator,
+    DynamicBatcher,
+    DynamicBatcherConfig,
+    ExecutionProvider,
+    InferenceSession,
+    SessionConfig,
+    Tensor,
+)
+
+# 1. Configure and load an ONNX model (from file path or bytes)
+config = SessionConfig(
+    intra_op_num_threads=1,
+    providers=[ExecutionProvider.CPU],
+)
+session = InferenceSession("model.onnx", config)
+print(session.model_info)
+
+# 2. Zero-copy synchronous inference with NumPy and ArenaAllocator reuse
+arena = ArenaAllocator(1024 * 1024)
+x = np.random.randn(4, 64).astype(np.float32)
+
+outputs = session.run(x, arena=arena)
+y_np = outputs[0].numpy()  # Zero-copy NumPy view backed by the arena
+del outputs, y_np
+arena.reset()  # O(1) pointer rewind once views are released
+
+# 3. High-throughput concurrent serving with DynamicBatcher (releases GIL)
+batcher_cfg = DynamicBatcherConfig(
+    max_batch_size=32,
+    max_batch_delay_ms=2,
+    num_workers=4,
+)
+
+with DynamicBatcher(session, batcher_cfg) as batcher:
+    samples = [np.random.randn(1, 64).astype(np.float32) for _ in range(64)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(batcher.run_numpy, samples))
+    print(batcher.metrics().to_dict())
 ```
 
-## Building
+### C++20 Quick Start
 
-```sh
-# Configure (Debug)
-cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
+```cpp
+#include <iostream>
+#include <pyreth/pyreth.hpp>
 
-# Configure (Release)
-cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+int main() {
+  using namespace pyreth;
 
-# Build all targets
-cmake --build build
+  // 1. Create an InferenceSession
+  SessionConfig session_cfg;
+  session_cfg.setIntraOpNumThreads(1);
+  auto session_res = InferenceSession::create("model.onnx", session_cfg);
+  if (!session_res.isOk()) {
+    std::cerr << "Load failed: " << session_res.error().message() << "\n";
+    return 1;
+  }
+  InferenceSession session = std::move(session_res).value();
 
-# Build in parallel (4 jobs)
-cmake --build build -j 4
+  // 2. Allocate a 64-byte aligned input tensor inside an ArenaAllocator
+  ArenaAllocator arena(1024 * 1024);
+  Tensor x = Tensor::create(Shape{1, 64}, DataType::Float32, arena).value();
+  x.fill<float>(1.0f);
+
+  // 3. Dispatch through DynamicBatcher
+  DynamicBatcherConfig batcher_cfg;
+  batcher_cfg.setMaxBatchSize(16).setMaxBatchDelayMs(2);
+  DynamicBatcher batcher(session, batcher_cfg);
+
+  auto future_res = batcher.submit({x});
+  auto outputs_res = future_res.value().get();
+  if (outputs_res.isOk()) {
+    const Tensor& y = outputs_res.value()[0];
+    std::cout << "Output shape: " << y.shape() << "\n";
+  }
+  return 0;
+}
 ```
 
-The build produces:
+---
 
-- `build/EngineCore.a` — static engine library
-- `build/Sandbox` — dev runner executable
+## Testing & Sanitizers
 
-## Testing
-
-Unit tests live in `unittest/` and are built with GoogleTest (fetched via CMake `FetchContent` on first configure). Every `*.cpp` file in `unittest/` is picked up automatically, and each test case is registered with CTest.
+### Running Unit & Integration Tests
 
 ```sh
-# Configure with tests enabled
-cmake -B build -S . -DBUILD_TESTING=ON
-
-# Build
-cmake --build build
-
-# Run all tests from the build directory
-cd build && ctest --output-on-failure
-
-# Or from the project root
+# Run C++ unit tests via CTest
 ctest --test-dir build --output-on-failure
 
-# Verbose test output
-ctest --test-dir build --output-on-failure -V
+# Run Python integration & concurrency tests via uv
+uv run pytest -v
 ```
 
-## Running the Sandbox
- 
-```sh
-./build/Sandbox
-```
+### Running Clang Sanitizers (`ASan`, `UBSan`, `TSan`)
 
-## Python Development (`uv`)
-
-Pyreth uses **`uv`** for dependency resolution, virtual environment management, and packaging with `scikit-build-core` and `nanobind`.
-
-### 1. Setup & Build Extension
+Pyreth's lock-free queues, worker parker, memory pools, and dynamic batcher are verified under Clang's sanitizers in CI across Linux (`ubuntu-latest`) and macOS (`macos-latest`):
 
 ```sh
-# Sync the virtual environment and compile the C++ nanobind extension
-uv sync
+# 1. AddressSanitizer (ASan) + UndefinedBehaviorSanitizer (UBSan)
+cmake -B build-asan -S . -DCMAKE_BUILD_TYPE=Debug -DENABLE_ASAN=ON -DENABLE_UBSAN=ON -DBUILD_BENCHMARKS=OFF
+cmake --build build-asan --parallel
+ctest --test-dir build-asan --output-on-failure
+
+# 2. ThreadSanitizer (TSan)
+cmake -B build-tsan -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENABLE_TSAN=ON -DBUILD_BENCHMARKS=OFF
+cmake --build build-tsan --parallel
+ctest --test-dir build-tsan --output-on-failure
 ```
 
-### 2. Run Python Tests
+---
+
+## Performance Benchmarking
 
 ```sh
-# Run pytest tests using the uv-managed environment
-uv run pytest
+# Run C++ Google Benchmark micro-benchmarks (Arena vs malloc, WorkStealingQueue, Tensor, InferenceSession)
+./build/benchmarks/pyreth_benchmarks --benchmark_min_time=0.05s
+
+# Run end-to-end Python serving benchmark suite (Batch sizes 1..64 + regression checks)
+uv run python benchmarks/benchmark_serving.py
 ```
 
-### 3. Interactive Verification
+See [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) for detailed latency percentiles (`P50`, `P90`, `P99`) and throughput (`requests/sec` and `samples/sec`).
 
-```sh
-uv run python -c "import pyreth; print('Version:', pyreth.__version__, '| Best Backend:', pyreth.get_best_backend())"
-```
+---
 
-## Code Style & Formatting
+## Code Style & Static Analysis
 
-Repository standards are enforced automatically in CI on every push and pull request via the `standards` job before running build/test workflows.
+Repository formatting and static analysis standards are enforced in CI on every push and pull request:
 
 ### C++ (`clang-format` & `clang-tidy`)
 
-C++ formatting is governed by [`.clang-format`](.clang-format) based on Google C++20 conventions (2-space indent, 100-character line limit, left pointer alignment `Type* ptr`, strict control-statement braces).
+C++ formatting is governed by [`.clang-format`](.clang-format) and static analysis by [`.clang-tidy`](.clang-tidy).
 
-- **Check formatting (dry run, matches CI)**:
-  ```sh
-  find include src unittest sandbox python \( -name '*.hpp' -o -name '*.cpp' \) -print0 | xargs -0 clang-format --dry-run --Werror
-  ```
+```sh
+# Check formatting across all C++ headers and sources (dry run)
+find include src unittest sandbox python benchmarks \( -name '*.hpp' -o -name '*.cpp' \) -print0 | xargs -0 clang-format --dry-run --Werror
 
-- **Format in-place**:
-  ```sh
-  # Format all C++ files across the codebase
-  find include src unittest sandbox python \( -name '*.hpp' -o -name '*.cpp' \) -print0 | xargs -0 clang-format -i
+# Format all C++ files in-place
+find include src unittest sandbox python benchmarks \( -name '*.hpp' -o -name '*.cpp' \) -print0 | xargs -0 clang-format -i
 
-  # Format an individual file
-  clang-format -i include/pyreth/thread_pool.hpp
-  ```
-
-- **Linting (`clang-tidy`)**:
-  Static analysis checks and naming conventions are configured in [`.clang-tidy`](.clang-tidy). Generate the compile commands database with CMake first:
-  ```sh
-  cmake -B build -S . -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-  clang-tidy src/core/thread_pool.cpp -p build
-  ```
-
-> **Editor / IDE Support**: If you use Neovim / LazyVim (with `conform.nvim` or `clangd`), VS Code, or CLion, the editor will automatically discover and apply [`.clang-format`](.clang-format) upon saving.
+# Run clang-tidy static analysis
+cmake -B build -S . -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+clang-tidy -p build src/core/*.cpp
+```
 
 ### Python (`ruff`)
 
-Python code formatting and linting are managed using [Ruff](https://docs.astral.sh/ruff/) via `uv`:
+```sh
+# Check Python linting and formatting
+uv run ruff check .
+uv run ruff format --check .
 
-- **Check linting and formatting**:
-  ```sh
-  uv run ruff check .
-  uv run ruff format --check .
-  ```
+# Auto-format and fix
+uv run ruff format .
+uv run ruff check --fix .
+```
 
-- **Auto-format and fix**:
-  ```sh
-  uv run ruff format .
-  uv run ruff check --fix .
-  ```
+---
+
+## Documentation
+
+- [`docs/tensor.md`](docs/tensor.md) — `Tensor`, `Shape`, `DataType`, 64-byte SIMD alignment, and storage backends
+- [`docs/memory.md`](docs/memory.md) — `ArenaAllocator`, `MemoryPool`, `ScopedArena`, and pin-counted lifetime safety
+- [`docs/parallelism.md`](docs/parallelism.md) — Lock-free `WorkStealingQueue`, `WorkerParker`, and `ThreadPool` architecture
+- [`docs/inference.md`](docs/inference.md) — `Runtime`, `Backend`, `ModelInfo`, `InferenceSession`, and zero-copy ORT execution
+- [`docs/dynamic_batching.md`](docs/dynamic_batching.md) — `DynamicBatcher` latency-bounded request coalescing and demultiplexing
+- [`docs/python_api.md`](docs/python_api.md) — Python `nanobind` API reference, zero-copy NumPy ownership, and GIL release architecture
+- [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) — Micro-benchmark and end-to-end serving benchmark report
+
+---
 
 ## License
 
