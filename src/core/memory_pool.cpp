@@ -191,44 +191,56 @@ void* ArenaAllocator::allocateFromNextBlock(size_t bytes, size_t alignment) {
 }
 
 // ---------------------------------------------------------------------------
-// MemoryPool::Lease Implementation
+// MemoryPool & MemoryPool::Lease Implementation
 // ---------------------------------------------------------------------------
 
+struct MemoryPool::PoolState {
+  mutable std::mutex mutex;
+  std::vector<std::unique_ptr<ArenaAllocator>> arenas;
+
+  void returnArena(std::unique_ptr<ArenaAllocator> arena) {
+    std::lock_guard<std::mutex> lock(mutex);
+    arenas.push_back(std::move(arena));
+  }
+};
+
 MemoryPool::Lease::Lease(MemoryPool* pool, std::unique_ptr<ArenaAllocator> arena)
-    : pool_(pool), arena_(std::move(arena)) {}
+    : state_(pool ? pool->state_ : std::weak_ptr<PoolState>{}), arena_(std::move(arena)) {}
 
 MemoryPool::Lease::~Lease() {
-  if (pool_ && arena_) {
-    arena_->reset();
-    pool_->returnArena(std::move(arena_));
+  if (arena_) {
+    if (auto st = state_.lock()) {
+      arena_->reset();
+      st->returnArena(std::move(arena_));
+    }
   }
 }
 
 MemoryPool::Lease::Lease(Lease&& other) noexcept
-    : pool_(other.pool_), arena_(std::move(other.arena_)) {
-  other.pool_ = nullptr;
+    : state_(std::move(other.state_)), arena_(std::move(other.arena_)) {
+  other.state_.reset();
 }
 
 MemoryPool::Lease& MemoryPool::Lease::operator=(Lease&& other) noexcept {
   if (this != &other) {
-    if (pool_ && arena_) {
-      arena_->reset();
-      pool_->returnArena(std::move(arena_));
+    if (arena_) {
+      if (auto st = state_.lock()) {
+        arena_->reset();
+        st->returnArena(std::move(arena_));
+      }
     }
-    pool_ = other.pool_;
+    state_ = std::move(other.state_);
     arena_ = std::move(other.arena_);
-    other.pool_ = nullptr;
+    other.state_.reset();
   }
   return *this;
 }
 
-// ---------------------------------------------------------------------------
-// MemoryPool Implementation
-// ---------------------------------------------------------------------------
-
-MemoryPool::MemoryPool(size_t initial_count, size_t block_size) : default_block_size_(block_size) {
+MemoryPool::MemoryPool(size_t initial_count, size_t block_size)
+    : default_block_size_(block_size), state_(std::make_shared<PoolState>()) {
+  state_->arenas.reserve(initial_count);
   for (size_t i = 0; i < initial_count; ++i) {
-    arenas_.push_back(std::make_unique<ArenaAllocator>(default_block_size_));
+    state_->arenas.push_back(std::make_unique<ArenaAllocator>(default_block_size_));
   }
 }
 
@@ -237,10 +249,10 @@ MemoryPool::~MemoryPool() = default;
 MemoryPool::Lease MemoryPool::acquire() {
   std::unique_ptr<ArenaAllocator> arena;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!arenas_.empty()) {
-      arena = std::move(arenas_.back());
-      arenas_.pop_back();
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (!state_->arenas.empty()) {
+      arena = std::move(state_->arenas.back());
+      state_->arenas.pop_back();
     }
   }
 
@@ -257,13 +269,8 @@ ArenaAllocator& MemoryPool::getThreadLocalArena() {
 }
 
 size_t MemoryPool::availableCount() const noexcept {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return arenas_.size();
-}
-
-void MemoryPool::returnArena(std::unique_ptr<ArenaAllocator> arena) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  arenas_.push_back(std::move(arena));
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  return state_->arenas.size();
 }
 
 // ---------------------------------------------------------------------------

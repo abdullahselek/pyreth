@@ -112,6 +112,40 @@ if(BUILD_TESTING)
   add_subdirectory(unittest)
 endif()
 
+# Micro-benchmarking Suite (Google Benchmark)
+option(BUILD_BENCHMARKS "Build Google Benchmark micro-benchmark suite" ON)
+
+if(BUILD_BENCHMARKS AND NOT SKBUILD)
+  include(FetchContent)
+
+  set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+  set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+  set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
+
+  FetchContent_Declare(
+    googlebenchmark
+    URL https://github.com/google/benchmark/archive/refs/tags/v1.9.1.tar.gz
+    SYSTEM
+  )
+
+  if(NOT TARGET benchmark::benchmark)
+    FetchContent_MakeAvailable(googlebenchmark)
+  endif()
+
+  foreach(_tgt IN ITEMS benchmark benchmark_main)
+    if(TARGET ${_tgt})
+      if(MSVC)
+        target_compile_options(${_tgt} PRIVATE /w)
+      else()
+        target_compile_options(${_tgt} PRIVATE -w)
+      endif()
+    endif()
+  endforeach()
+
+  add_subdirectory(benchmarks)
+endif()
+
 # Executable / Sandbox Runner
 add_executable(Sandbox
     sandbox/main.cpp

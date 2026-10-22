@@ -195,13 +195,17 @@ private:
  *  2. Pooled arena leases with automatic O(1) reset upon return.
  */
 class PYRETH_API MemoryPool {
+private:
+  struct PoolState;
+
 public:
   /**
    * @class Lease
    * @brief RAII lease for an ArenaAllocator borrowed from a MemoryPool.
    *
    * Automatically resets the arena in O(1) and returns it to the pool upon
-   * destruction.
+   * destruction (or frees it safely if the originating MemoryPool has already
+   * been destroyed).
    */
   class PYRETH_API Lease {
   public:
@@ -221,7 +225,7 @@ public:
     [[nodiscard]] bool valid() const noexcept { return arena_ != nullptr; }
 
   private:
-    MemoryPool* pool_{nullptr};
+    std::weak_ptr<PoolState> state_{};
     std::unique_ptr<ArenaAllocator> arena_{nullptr};
   };
 
@@ -261,11 +265,9 @@ public:
 
 private:
   friend class Lease;
-  void returnArena(std::unique_ptr<ArenaAllocator> arena);
 
   size_t default_block_size_;
-  mutable std::mutex mutex_;
-  std::vector<std::unique_ptr<ArenaAllocator>> arenas_;
+  std::shared_ptr<PoolState> state_;
 };
 
 /**
