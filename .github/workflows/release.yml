@@ -26,10 +26,10 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build and test wheels via cibuildwheel
-        uses: pypa/cibuildwheel@v2.23.2
+        uses: pypa/cibuildwheel@v3
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cibw-wheels-${{ matrix.os }}
           path: ./wheelhouse/*.whl
@@ -48,7 +48,7 @@ jobs:
         run: uv build --sdist --out-dir dist
 
       - name: Upload sdist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -66,7 +66,7 @@ jobs:
 
     steps:
       - name: Download all built wheels and sdist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
