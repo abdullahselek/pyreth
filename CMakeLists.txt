@@ -70,13 +70,6 @@ else()
   )
 endif()
 
-# AppleClang prior to 17.0 (e.g. Xcode 16 on macos-15) gates C++20
-# std::jthread and std::stop_token behind -fexperimental-library.
-if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "17.0")
-  target_compile_options(EngineCore PUBLIC -fexperimental-library)
-  target_link_options(EngineCore PUBLIC -fexperimental-library)
-endif()
-
 # Sanitizers (AddressSanitizer, UndefinedBehaviorSanitizer, ThreadSanitizer)
 option(ENABLE_ASAN "Enable AddressSanitizer (ASan)" OFF)
 option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer (UBSan)" OFF)

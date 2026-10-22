@@ -88,7 +88,7 @@ Full benchmark methodology and latency/throughput tables across batch sizes 1 to
 
 - **CMake** >= 3.25
 - **C++20 Compiler**:
-  - **macOS (Apple Silicon / Intel)**: Xcode Command Line Tools (`AppleClang` >= 15)
+  - **macOS (Apple Silicon)**: macOS 26+ with Xcode Command Line Tools (`AppleClang` >= 17)
   - **Linux (Ubuntu / Debian x86_64 & ARM64)**: `clang` >= 16 or `g++` >= 12, `build-essential`, `ninja-build`
   - **Windows (x64)**: Visual Studio 2022 (MSVC v143)
 - **Python Ecosystem**: [uv](https://docs.astral.sh/uv/) (automatically manages Python >= 3.13, `nanobind`, `scikit-build-core`, and `numpy`)

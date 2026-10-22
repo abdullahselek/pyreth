@@ -16,7 +16,6 @@ jobs:
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
-          - macos-15
           - macos-26
           - macos-latest
           - windows-latest
@@ -26,7 +25,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build and test wheels via cibuildwheel
-        uses: pypa/cibuildwheel@v4.3.4
+        uses: pypa/cibuildwheel@v4.3.2
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v7
