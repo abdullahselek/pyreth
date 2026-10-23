@@ -83,7 +83,7 @@ jobs:
 
       - name: Python tests (uv run pytest)
         run: |
-          uv sync
+          uv sync --group benchmarks
           uv run pytest
 
   sanitizers:
