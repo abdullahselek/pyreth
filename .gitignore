@@ -90,3 +90,6 @@ htmlcov/
 venv/
 ENV/
 env/
+
+# Benchmark ONNX Model Cache
+benchmarks/.onnx_cache/
