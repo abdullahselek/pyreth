@@ -42,6 +42,23 @@ InputBuilder = Callable[[int], ModelInputs]
 
 @dataclass
 class BatchBenchmarkEntry:
+    """Single benchmark measurement entry for a specific execution mode and batch size.
+
+    Attributes:
+        mode: Execution mode identifier (`sync_heap`, `sync_arena`, `async_thread_pool`,
+            or `dynamic_batcher`).
+        batch_size: Input batch size (or `max_batch_size` for `dynamic_batcher`).
+        p50_us: Median (P50) request latency in microseconds.
+        p90_us: 90th percentile (P90) request latency in microseconds.
+        p99_us: 99th percentile (P99) request latency in microseconds.
+        p50_ms: Median (P50) request latency in milliseconds.
+        p90_ms: 90th percentile (P90) request latency in milliseconds.
+        p99_ms: 99th percentile (P99) request latency in milliseconds.
+        requests_per_sec: Measured request throughput in requests per second.
+        samples_per_sec: Measured sample throughput in samples per second.
+        avg_coalesced_batch: Average coalesced batch size per dispatched ONNX Runtime run.
+    """
+
     mode: str
     batch_size: int
     p50_us: float
@@ -58,6 +75,14 @@ class BatchBenchmarkEntry:
 def compute_percentiles_us(
     latencies_us: list[float] | np.ndarray,
 ) -> tuple[float, float, float]:
+    """Compute P50, P90, and P99 latency percentiles in microseconds.
+
+    Args:
+        latencies_us: Sequence or array of per-request latencies in microseconds.
+
+    Returns:
+        A tuple of `(p50_us, p90_us, p99_us)` as floats.
+    """
     arr = np.asarray(latencies_us, dtype=np.float64)
     p50 = float(np.percentile(arr, 50))
     p90 = float(np.percentile(arr, 90))
@@ -66,6 +91,14 @@ def compute_percentiles_us(
 
 
 def _dtype_byte_size(dtype: DataType) -> int:
+    """Return the element byte size for a given Pyreth `DataType`.
+
+    Args:
+        dtype: The Pyreth tensor `DataType` enum value.
+
+    Returns:
+        Number of bytes per element (1, 2, 4, or 8).
+    """
     if dtype in (DataType.Float64, DataType.Int64, DataType.UInt64):
         return 8
     if dtype in (DataType.Float32, DataType.Int32, DataType.UInt32):
@@ -81,6 +114,14 @@ def _dtype_byte_size(dtype: DataType) -> int:
 
 
 def _inputs_total_bytes(inputs: ModelInputs) -> int:
+    """Compute the total byte footprint of a model input container including alignment padding.
+
+    Args:
+        inputs: Single `Tensor`, positional `list[Tensor]`, or named `dict[str, Tensor]`.
+
+    Returns:
+        Total payload bytes plus 64-byte alignment padding per tensor.
+    """
     if isinstance(inputs, Tensor):
         return inputs.nbytes + 64
     if isinstance(inputs, dict):
@@ -94,7 +135,17 @@ def compute_recommended_arena_block_size(
     max_batch_size: int = 64,
     min_block_size: int = 1024 * 1024,
 ) -> int:
-    """Compute an arena block size large enough to hold batched inputs and outputs without overflow."""
+    """Compute a 64 KiB-aligned arena block size capable of holding max-batch inputs and outputs.
+
+    Args:
+        session: Initialized `InferenceSession` whose output schemas are inspected.
+        input_builder: Optional callable returning sample inputs for a given batch size.
+        max_batch_size: Maximum batch size that will be allocated in a single arena block.
+        min_block_size: Minimum block size in bytes (defaults to 1 MiB).
+
+    Returns:
+        Recommended arena block size in bytes (multiple of 64 KiB).
+    """
     inferred_seq_dim = 64
     input_bytes = 0
     if input_builder is not None:
@@ -134,6 +185,16 @@ def create_default_session(
     intra_op_threads: int = 1,
     providers: list[ExecutionProvider] | None = None,
 ) -> InferenceSession:
+    """Create an `InferenceSession` configured for low-overhead benchmark execution.
+
+    Args:
+        model_path_or_bytes: Path to an ONNX file on disk or serialized ONNX model bytes.
+        intra_op_threads: Number of ONNX Runtime intra-op threads per session run.
+        providers: Optional ordered list of `ExecutionProvider`s (defaults to `[CPU]`).
+
+    Returns:
+        Configured and initialized `InferenceSession`.
+    """
     cfg = SessionConfig(
         intra_op_num_threads=intra_op_threads,
         inter_op_num_threads=1,
@@ -153,6 +214,21 @@ def benchmark_sync_session(
     use_arena: bool = False,
     arena_block_size: int = 0,
 ) -> list[BatchBenchmarkEntry]:
+    """Benchmark synchronous `InferenceSession.run` across the specified batch sizes.
+
+    Args:
+        session: Active `InferenceSession` to benchmark.
+        input_builder: Callable taking `batch_size` and returning model input tensor(s).
+        batch_sizes: Tuple of batch sizes to evaluate.
+        warmup: Number of untimed warmup iterations per batch size.
+        iterations: Number of timed iterations per batch size.
+        use_arena: If True, pre-allocate outputs in a reusable `ArenaAllocator` and call
+            `arena.reset()` after each iteration; otherwise allocate outputs on the heap.
+        arena_block_size: Optional custom arena block size in bytes (0 to auto-compute).
+
+    Returns:
+        List of `BatchBenchmarkEntry` results, one per batch size.
+    """
     results: list[BatchBenchmarkEntry] = []
     if arena_block_size <= 0:
         arena_block_size = compute_recommended_arena_block_size(
@@ -220,6 +296,20 @@ def benchmark_async_thread_pool(
     num_workers: int = 4,
     arena_block_size: int = 0,
 ) -> list[BatchBenchmarkEntry]:
+    """Benchmark asynchronous `InferenceSession.run_async` on a `ThreadPool` and `MemoryPool`.
+
+    Args:
+        session: Active `InferenceSession` to benchmark.
+        input_builder: Callable taking `batch_size` and returning model input tensor(s).
+        batch_sizes: Tuple of batch sizes to evaluate.
+        warmup: Number of untimed warmup submissions per batch size.
+        iterations: Number of timed asynchronous submissions per batch size.
+        num_workers: Number of worker threads in the C++ `ThreadPool`.
+        arena_block_size: Optional custom arena block size in bytes for `MemoryPool`.
+
+    Returns:
+        List of `BatchBenchmarkEntry` results, one per batch size.
+    """
     results: list[BatchBenchmarkEntry] = []
     if arena_block_size <= 0:
         arena_block_size = compute_recommended_arena_block_size(
@@ -294,6 +384,26 @@ def benchmark_dynamic_batcher_serving(
     max_batch_delay_us: int = 500,
     arena_block_size: int = 0,
 ) -> list[BatchBenchmarkEntry]:
+    """Benchmark concurrent multi-threaded serving through `DynamicBatcher`.
+
+    Spawns `client_threads` concurrent Python threads that submit `batch_size=1` requests
+    while releasing the Python GIL, allowing `DynamicBatcher` to coalesce requests up to
+    each `max_batch_size` in `batch_sizes`.
+
+    Args:
+        session: Active `InferenceSession` to serve.
+        input_builder: Callable taking `batch_size` and returning model input tensor(s).
+        batch_sizes: Tuple of `max_batch_size` configurations to evaluate.
+        total_requests: Total number of individual `B=1` requests across all client threads.
+        client_threads: Number of concurrent Python client threads submitting requests.
+        num_workers: Number of worker threads in `DynamicBatcher`'s backend pool.
+        max_batch_delay_ms: Millisecond batch coalescing timeout window.
+        max_batch_delay_us: Additional microsecond batch coalescing timeout window.
+        arena_block_size: Optional custom arena block size in bytes for `DynamicBatcher`.
+
+    Returns:
+        List of `BatchBenchmarkEntry` results, one per `max_batch_size`.
+    """
     results: list[BatchBenchmarkEntry] = []
     if arena_block_size <= 0:
         arena_block_size = compute_recommended_arena_block_size(
@@ -380,7 +490,23 @@ def verify_benchmark_regressions(
     max_p99_ms: float = 5000.0,
     min_scaling_factor: float = 1.2,
 ) -> list[str]:
-    """Validate latency and throughput invariants across all 4 benchmark modes."""
+    """Validate latency ordering, throughput scaling, and batch coalescing invariants.
+
+    Args:
+        sync_heap: Benchmark entries for synchronous heap-allocated execution.
+        sync_arena: Benchmark entries for synchronous `ArenaAllocator` execution.
+        async_pool: Benchmark entries for asynchronous `ThreadPool` execution.
+        dynamic_batcher: Benchmark entries for concurrent `DynamicBatcher` serving.
+        batch_sizes: Expected tuple of evaluated batch sizes.
+        max_p99_ms: Maximum allowable P99 latency in milliseconds.
+        min_scaling_factor: Minimum sample throughput ratio between max and min batch sizes.
+
+    Returns:
+        List of human-readable descriptions of all passed regression checks.
+
+    Raises:
+        AssertionError: If any latency, throughput, or batch coalescing invariant fails.
+    """
     checks_passed: list[str] = []
 
     for entries, label in (
@@ -457,6 +583,28 @@ def run_model_benchmark_suite(
     max_p99_ms: float = 5000.0,
     min_scaling_factor: float = 1.2,
 ) -> dict[str, object]:
+    """Execute all 4 Pyreth benchmark modes for a loaded `InferenceSession`.
+
+    Args:
+        session: Initialized `InferenceSession` for the target ONNX model.
+        input_builder: Callable taking `batch_size` and returning model input tensor(s).
+        model_id: HuggingFace model identifier or descriptive model name.
+        task_name: Benchmark task category (e.g., `image_classification`, `small_llm`,
+            `regression`).
+        batch_sizes: Tuple of batch sizes to benchmark.
+        iterations: Number of timed iterations per batch size for sync/async modes.
+        warmup: Number of warmup iterations per batch size.
+        dynamic_requests: Total concurrent requests per batch size for `DynamicBatcher`.
+        client_threads: Number of concurrent Python client threads for `DynamicBatcher`.
+        num_workers: Number of C++ worker threads in `ThreadPool` and `DynamicBatcher`.
+        check_regressions: Whether to run `verify_benchmark_regressions` on the results.
+        max_p99_ms: Maximum allowable P99 latency in milliseconds for regression checks.
+        min_scaling_factor: Minimum sample throughput scaling ratio from min to max batch.
+
+    Returns:
+        Dictionary containing environment metadata, benchmark entries per mode, and
+        regression check results.
+    """
     arena_block_size = compute_recommended_arena_block_size(
         session, input_builder=input_builder, max_batch_size=max(batch_sizes)
     )
@@ -532,6 +680,12 @@ def run_model_benchmark_suite(
 
 
 def print_table(title: str, entries: list[BatchBenchmarkEntry]) -> None:
+    """Print a formatted ASCII benchmark table for a single execution mode.
+
+    Args:
+        title: Section title to display above the table.
+        entries: List of `BatchBenchmarkEntry` rows to format.
+    """
     print(f"\n=== {title} ===")
     header = (
         f"{'Batch':>6} | {'P50 (us)':>10} | {'P90 (us)':>10} | {'P99 (us)':>10} | "
@@ -554,6 +708,15 @@ def print_benchmark_report(
     client_threads: int = 8,
     json_out: Path | None = None,
 ) -> None:
+    """Print the full 4-mode benchmark report to stdout and optionally save it as JSON.
+
+    Args:
+        title: Banner title for the benchmark suite.
+        model_desc: Human-readable model architecture and I/O summary.
+        report: Benchmark report dictionary returned by `run_model_benchmark_suite`.
+        client_threads: Number of concurrent Python client threads used in Mode 3.
+        json_out: Optional file path where the JSON report should be written.
+    """
     sync_heap, sync_arena, async_pool, dynamic_batcher = report.pop("_objects")  # type: ignore[misc]
     env = report["environment"]  # type: ignore[index]
 
