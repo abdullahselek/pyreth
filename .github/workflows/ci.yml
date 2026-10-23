@@ -33,10 +33,12 @@ jobs:
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
 
       - name: Check Python formatting & linting (ruff)
         run: |
-          uv sync
+          uv sync --python 3.14
           uv run ruff check .
           uv run ruff format --check .
 
@@ -80,10 +82,12 @@ jobs:
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
 
       - name: Python tests (uv run pytest)
         run: |
-          uv sync --group benchmarks
+          uv sync --python 3.14 --all-groups
           uv run pytest
 
   sanitizers:
