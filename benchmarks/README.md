@@ -194,7 +194,67 @@ Each Python thread submits individual `B=1` requests concurrently while the C++ 
 
 ---
 
-## 5. Automated Regression Checks & Reproduction
+## 5. HuggingFace Image Classification Benchmark (`google/mobilenet_v2_1.0_224`)
+
+Executed via:
+
+```bash
+uv run python benchmarks/benchmark_image_classification.py --iterations 10 --warmup 2 --dynamic-requests 64
+```
+
+Model: `google/mobilenet_v2_1.0_224` exported from HuggingFace (`pixel_values: [batch_size, 3, 224, 224]` `float32` $\rightarrow$ `logits: [batch_size, 1001]` `float32`).
+
+### 5.1 Synchronous `InferenceSession.run` (Heap-Allocated Outputs)
+
+| Batch Size | P50 Latency (us) | P90 Latency (us) | P99 Latency (us) | P99 Latency (ms) | Throughput (Req/sec) | Throughput (Samples/sec) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **1** | 9,192.52 | 9,268.70 | 9,340.48 | 9.3405 | 108.9 | 108.9 |
+| **2** | 18,271.44 | 18,442.19 | 18,512.26 | 18.5123 | 54.7 | 109.3 |
+| **4** | 36,551.17 | 36,756.99 | 36,986.72 | 36.9867 | 27.3 | 109.3 |
+| **8** | 73,511.21 | 74,000.35 | 74,913.05 | 74.9130 | 13.6 | 108.6 |
+| **16** | 148,779.08 | 149,413.96 | 150,150.42 | 150.1504 | 6.7 | 107.4 |
+| **32** | 299,531.67 | 300,570.26 | 303,642.59 | 303.6426 | 3.3 | 106.7 |
+| **64** | 601,627.54 | 603,021.08 | 603,723.08 | 603.7231 | 1.7 | 106.3 |
+
+### 5.2 Synchronous `InferenceSession.run` (`ArenaAllocator` O(1) Reset Reuse)
+
+| Batch Size | P50 Latency (us) | P90 Latency (us) | P99 Latency (us) | P99 Latency (ms) | Throughput (Req/sec) | Throughput (Samples/sec) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **1** | 9,225.73 | 9,359.84 | 9,360.21 | 9.3602 | 108.2 | 108.2 |
+| **2** | 18,587.48 | 18,753.42 | 19,185.15 | 19.1852 | 53.8 | 107.5 |
+| **4** | 36,635.19 | 37,619.95 | 37,926.67 | 37.9267 | 27.1 | 108.3 |
+| **8** | 73,248.81 | 73,494.60 | 73,554.81 | 73.5548 | 13.6 | **109.2** |
+| **16** | 148,053.04 | 148,279.20 | 148,351.36 | 148.3514 | 6.8 | 108.1 |
+| **32** | 299,413.17 | 299,697.63 | 299,854.30 | 299.8543 | 3.3 | 107.0 |
+| **64** | 601,309.31 | 602,223.25 | 602,304.96 | 602.3050 | 1.7 | 106.4 |
+
+### 5.3 Asynchronous `InferenceSession.run_async` (`ThreadPool` + `MemoryPool`, 4 Workers)
+
+| Batch Size | P50 Latency (us) | P90 Latency (us) | P99 Latency (us) | P99 Latency (ms) | Throughput (Req/sec) | Throughput (Samples/sec) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **1** | 19,861.62 | 29,648.39 | 29,665.36 | 29.6654 | 336.9 | 336.9 |
+| **2** | 39,594.35 | 59,137.50 | 59,138.48 | 59.1385 | 169.1 | **338.1** |
+| **4** | 79,364.04 | 118,407.92 | 118,783.59 | 118.7836 | 84.2 | 336.6 |
+| **8** | 160,331.46 | 239,257.70 | 239,328.21 | 239.3282 | 41.8 | 334.2 |
+| **16** | 322,426.65 | 480,076.24 | 480,676.21 | 480.6762 | 20.8 | 332.8 |
+| **32** | 644,930.60 | 964,330.41 | 964,333.42 | 964.3334 | 10.4 | 331.8 |
+| **64** | 1,286,559.87 | 1,921,771.30 | 1,926,813.99 | 1,926.8140 | 5.2 | 332.1 |
+
+### 5.4 Concurrent `DynamicBatcher` Serving (8 Python Client Threads)
+
+| Max Batch Size | P50 Latency (us) | P90 Latency (us) | P99 Latency (us) | P99 Latency (ms) | Throughput (Req/sec) | Avg Coalesced Batch |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **1** | 83,484.27 | 147,400.73 | 157,315.92 | 157.3159 | 403.7 | 1.00 |
+| **2** | 88,740.81 | 157,110.37 | 157,393.78 | 157.3938 | **404.1** | 2.00 |
+| **4** | 99,174.87 | 158,328.66 | 158,743.21 | 158.7432 | 400.9 | 4.00 |
+| **8** | 120,370.67 | 160,836.11 | 160,851.09 | 160.8511 | 395.5 | 8.00 |
+| **16** | 161,866.71 | 162,280.82 | 162,295.09 | 162.2951 | 392.7 | 16.00 |
+| **32** | 321,724.87 | 322,163.62 | 322,252.00 | 322.2520 | 198.2 | 32.00 |
+| **64** | 642,963.56 | 643,114.47 | 643,196.58 | 643.1966 | 99.4 | **64.00** |
+
+---
+
+## 6. Automated Regression Checks & Reproduction
 
 Both benchmark suites are wired into automated testing to prevent performance or correctness regressions:
 

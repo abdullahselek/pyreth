@@ -10,6 +10,9 @@ from pyreth import Tensor
 
 def _load_module(module_name: str, rel_path: str):
     repo_root = Path(__file__).resolve().parents[2]
+    benchmarks_dir = str(repo_root / "benchmarks")
+    if benchmarks_dir not in sys.path:
+        sys.path.insert(0, benchmarks_dir)
     script_path = repo_root / rel_path
     spec = importlib.util.spec_from_file_location(module_name, script_path)
     assert spec is not None and spec.loader is not None
@@ -99,3 +102,24 @@ def test_shared_benchmark_common_single_and_multi_input():
     )
     assert len(dual_report["sync_heap"]) == 2
     assert len(dual_report["dynamic_batcher"]) == 2
+
+
+def test_image_classification_onnx_benchmark_smoke():
+    img_bench = _load_module(
+        "benchmark_image_classification",
+        "benchmarks/benchmark_image_classification.py",
+    )
+    report = img_bench.run_image_classification_benchmarks(
+        batch_sizes=(1, 4),
+        iterations=2,
+        warmup=1,
+        dynamic_requests=8,
+        client_threads=4,
+        check_regressions=True,
+    )
+    assert report["task"] == "image_classification"
+    assert len(report["sync_heap"]) == 2
+    assert len(report["sync_arena"]) == 2
+    assert len(report["async_thread_pool"]) == 2
+    assert len(report["dynamic_batcher"]) == 2
+    assert len(report["regression_checks"]) == 3

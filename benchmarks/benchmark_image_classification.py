@@ -94,6 +94,12 @@ def export_image_classification_to_onnx(
     cache_dir.mkdir(parents=True, exist_ok=True)
     onnx_path = cache_dir / _sanitize_model_filename(model_id, image_size)
 
+    if onnx_path.exists() and not force_export and not verify_numerics:
+        session = create_default_session(onnx_path)
+        in_info = session.get_input_info("pixel_values")
+        out_info = session.get_output_info("logits")
+        return onnx_path, int(in_info.shape[2]), int(out_info.shape[1])
+
     hf_model = AutoModelForImageClassification.from_pretrained(model_id)
     hf_model.eval()
 
