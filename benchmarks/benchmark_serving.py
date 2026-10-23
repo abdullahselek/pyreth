@@ -45,6 +45,14 @@ BATCH_SIZES: tuple[int, ...] = (1, 2, 4, 8, 16, 32, 64)
 
 
 def _encode_varint(val: int) -> bytes:
+    """Encode an integer as a Protobuf base-128 varint.
+
+    Args:
+        val: Integer value to encode.
+
+    Returns:
+        Encoded varint bytes.
+    """
     if val < 0:
         val += 1 << 64
     out = bytearray()
@@ -56,29 +64,84 @@ def _encode_varint(val: int) -> bytes:
 
 
 def _encode_tag(field_num: int, wire_type: int) -> bytes:
+    """Encode a Protobuf field tag combining field number and wire type.
+
+    Args:
+        field_num: Protobuf field number.
+        wire_type: Protobuf wire type (0 for varint, 2 for length-delimited).
+
+    Returns:
+        Encoded tag bytes.
+    """
     return _encode_varint((field_num << 3) | wire_type)
 
 
 def _encode_int64(field_num: int, val: int) -> bytes:
+    """Encode a 64-bit integer Protobuf field.
+
+    Args:
+        field_num: Protobuf field number.
+        val: Integer value.
+
+    Returns:
+        Encoded field bytes.
+    """
     return _encode_tag(field_num, 0) + _encode_varint(val)
 
 
 def _encode_string(field_num: int, text: str) -> bytes:
+    """Encode a UTF-8 string Protobuf field.
+
+    Args:
+        field_num: Protobuf field number.
+        text: String payload to encode.
+
+    Returns:
+        Encoded length-delimited UTF-8 field bytes.
+    """
     raw = text.encode("utf-8")
     return _encode_tag(field_num, 2) + _encode_varint(len(raw)) + raw
 
 
 def _encode_bytes(field_num: int, payload: bytes) -> bytes:
+    """Encode a length-delimited raw bytes Protobuf field.
+
+    Args:
+        field_num: Protobuf field number.
+        payload: Raw byte sequence.
+
+    Returns:
+        Encoded length-delimited field bytes.
+    """
     return _encode_tag(field_num, 2) + _encode_varint(len(payload)) + payload
 
 
 def _encode_shape_dim(dim_val: int = -1, dim_param: str = "") -> bytes:
+    """Encode an ONNX `TensorShapeProto.Dimension` entry.
+
+    Args:
+        dim_val: Fixed integer dimension size (used when `dim_param` is empty).
+        dim_param: Symbolic dimension name (e.g., `"batch_size"`).
+
+    Returns:
+        Serialized `Dimension` protobuf bytes.
+    """
     if dim_param:
         return _encode_string(2, dim_param)
     return _encode_int64(1, dim_val)
 
 
 def _encode_value_info(name: str, elem_type: int, dims: list[bytes]) -> bytes:
+    """Encode an ONNX `ValueInfoProto` describing a graph input or output tensor.
+
+    Args:
+        name: Tensor node name in the ONNX graph.
+        elem_type: ONNX `TensorProto.DataType` integer code (1 for `FLOAT`).
+        dims: List of serialized `TensorShapeProto.Dimension` entries.
+
+    Returns:
+        Serialized `ValueInfoProto` bytes.
+    """
     shape_proto = b"".join(_encode_bytes(1, d) for d in dims)
     tensor_type = _encode_int64(1, elem_type) + _encode_bytes(2, shape_proto)
     type_proto = _encode_bytes(1, tensor_type)
@@ -86,6 +149,16 @@ def _encode_value_info(name: str, elem_type: int, dims: list[bytes]) -> bytes:
 
 
 def _encode_float_initializer(name: str, dims: list[int], values: np.ndarray) -> bytes:
+    """Encode an ONNX `TensorProto` float32 weight initializer.
+
+    Args:
+        name: Initializer tensor name.
+        dims: Static integer dimensions of the weight tensor.
+        values: NumPy array of float32 weight values.
+
+    Returns:
+        Serialized `TensorProto` initializer bytes.
+    """
     tp = bytearray()
     for d in dims:
         tp += _encode_int64(1, d)
@@ -99,6 +172,17 @@ def _encode_float_initializer(name: str, dims: list[int], values: np.ndarray) ->
 def _encode_node(
     op_type: str, inputs: list[str], outputs: list[str], name: str
 ) -> bytes:
+    """Encode an ONNX `NodeProto` operator node.
+
+    Args:
+        op_type: ONNX operator name (e.g., `"MatMul"`, `"Add"`, `"Relu"`).
+        inputs: List of input tensor names.
+        outputs: List of output tensor names.
+        name: Node identifier name.
+
+    Returns:
+        Serialized `NodeProto` bytes.
+    """
     node = bytearray()
     for inp in inputs:
         node += _encode_string(1, inp)
@@ -112,8 +196,17 @@ def _encode_node(
 def build_serving_mlp_onnx_bytes(
     in_features: int = 64, hidden_features: int = 128, out_features: int = 16
 ) -> bytes:
-    """Build a 2-layer MLP ONNX model with dynamic batch axis:
-    Y = Relu(X @ W1 + B1) @ W2 + B2
+    """Build a 2-layer MLP ONNX model with a dynamic batch axis.
+
+    Constructs the computation graph `Y = Relu(X @ W1 + B1) @ W2 + B2`.
+
+    Args:
+        in_features: Number of input features per sample.
+        hidden_features: Number of hidden layer units.
+        out_features: Number of output features per sample.
+
+    Returns:
+        Serialized ONNX `ModelProto` bytes.
     """
     rng = np.random.default_rng(42)
     w1 = rng.standard_normal((in_features, hidden_features), dtype=np.float32) * 0.1
@@ -178,6 +271,23 @@ def build_serving_mlp_onnx_bytes(
 
 @dataclass
 class BatchBenchmarkEntry:
+    """Single benchmark measurement entry for a specific execution mode and batch size.
+
+    Attributes:
+        mode: Execution mode identifier (`sync_heap`, `sync_arena`, `async_thread_pool`,
+            or `dynamic_batcher`).
+        batch_size: Input batch size (or `max_batch_size` for `dynamic_batcher`).
+        p50_us: Median (P50) request latency in microseconds.
+        p90_us: 90th percentile (P90) request latency in microseconds.
+        p99_us: 99th percentile (P99) request latency in microseconds.
+        p50_ms: Median (P50) request latency in milliseconds.
+        p90_ms: 90th percentile (P90) request latency in milliseconds.
+        p99_ms: 99th percentile (P99) request latency in milliseconds.
+        requests_per_sec: Measured request throughput in requests per second.
+        samples_per_sec: Measured sample throughput in samples per second.
+        avg_coalesced_batch: Average coalesced batch size per dispatched ONNX Runtime run.
+    """
+
     mode: str
     batch_size: int
     p50_us: float
@@ -194,6 +304,14 @@ class BatchBenchmarkEntry:
 def _compute_percentiles_us(
     latencies_us: list[float] | np.ndarray,
 ) -> tuple[float, float, float]:
+    """Compute P50, P90, and P99 latency percentiles in microseconds.
+
+    Args:
+        latencies_us: Sequence or array of per-request latencies in microseconds.
+
+    Returns:
+        A tuple of `(p50_us, p90_us, p99_us)` as floats.
+    """
     arr = np.asarray(latencies_us, dtype=np.float64)
     p50 = float(np.percentile(arr, 50))
     p90 = float(np.percentile(arr, 90))
@@ -214,6 +332,20 @@ def benchmark_sync_session(
     iterations: int = 200,
     use_arena: bool = False,
 ) -> list[BatchBenchmarkEntry]:
+    """Benchmark synchronous `InferenceSession.run` across the specified batch sizes.
+
+    Args:
+        session: Active `InferenceSession` to benchmark.
+        in_features: Number of input features per sample.
+        batch_sizes: Tuple of batch sizes to evaluate.
+        warmup: Number of untimed warmup iterations per batch size.
+        iterations: Number of timed iterations per batch size.
+        use_arena: If True, allocate outputs in a reusable `ArenaAllocator`; otherwise
+            allocate outputs on the heap.
+
+    Returns:
+        List of `BatchBenchmarkEntry` results, one per batch size.
+    """
     results: list[BatchBenchmarkEntry] = []
     arena = ArenaAllocator(512 * 1024) if use_arena else None
     mode_name = "sync_arena" if use_arena else "sync_heap"
@@ -282,6 +414,19 @@ def benchmark_async_thread_pool(
     iterations: int = 200,
     num_workers: int = 4,
 ) -> list[BatchBenchmarkEntry]:
+    """Benchmark asynchronous `InferenceSession.run_async` on a `ThreadPool` and `MemoryPool`.
+
+    Args:
+        session: Active `InferenceSession` to benchmark.
+        in_features: Number of input features per sample.
+        batch_sizes: Tuple of batch sizes to evaluate.
+        warmup: Number of untimed warmup submissions per batch size.
+        iterations: Number of timed asynchronous submissions per batch size.
+        num_workers: Number of worker threads in the C++ `ThreadPool`.
+
+    Returns:
+        List of `BatchBenchmarkEntry` results, one per batch size.
+    """
     results: list[BatchBenchmarkEntry] = []
     mem_pool = MemoryPool(initial_count=16, block_size=256 * 1024)
     pool_cfg = ThreadPoolConfig(
@@ -353,6 +498,18 @@ def benchmark_dynamic_batcher_serving(
     total_requests: int = 512,
     client_threads: int = 8,
 ) -> list[BatchBenchmarkEntry]:
+    """Benchmark concurrent multi-threaded serving through `DynamicBatcher`.
+
+    Args:
+        session: Active `InferenceSession` to serve.
+        in_features: Number of input features per sample.
+        batch_sizes: Tuple of `max_batch_size` configurations to evaluate.
+        total_requests: Total number of individual `B=1` requests across all client threads.
+        client_threads: Number of concurrent Python client threads submitting requests.
+
+    Returns:
+        List of `BatchBenchmarkEntry` results, one per `max_batch_size`.
+    """
     results: list[BatchBenchmarkEntry] = []
     single_sample = np.ones((1, in_features), dtype=np.float32)
     single_tensor = Tensor.from_numpy(single_sample)
@@ -437,7 +594,20 @@ def verify_benchmark_regressions(
     async_pool: list[BatchBenchmarkEntry],
     dynamic_batcher: list[BatchBenchmarkEntry],
 ) -> list[str]:
-    """Validate latency and throughput scaling invariants across batch sizes 1..64."""
+    """Validate latency and throughput scaling invariants across batch sizes 1..64.
+
+    Args:
+        sync_heap: Benchmark entries for synchronous heap-allocated execution.
+        sync_arena: Benchmark entries for synchronous `ArenaAllocator` execution.
+        async_pool: Benchmark entries for asynchronous `ThreadPool` execution.
+        dynamic_batcher: Benchmark entries for concurrent `DynamicBatcher` serving.
+
+    Returns:
+        List of human-readable descriptions of all passed regression checks.
+
+    Raises:
+        AssertionError: If any latency, throughput, or batch coalescing invariant fails.
+    """
     checks_passed: list[str] = []
 
     # 1. All batch sizes 1..64 present
@@ -507,6 +677,12 @@ def verify_benchmark_regressions(
 
 
 def _print_table(title: str, entries: list[BatchBenchmarkEntry]) -> None:
+    """Print a formatted ASCII benchmark table for a single execution mode.
+
+    Args:
+        title: Section title to display above the table.
+        entries: List of `BatchBenchmarkEntry` rows to format.
+    """
     print(f"\n=== {title} ===")
     header = (
         f"{'Batch':>6} | {'P50 (us)':>10} | {'P90 (us)':>10} | {'P99 (us)':>10} | "
@@ -529,6 +705,19 @@ def run_all_benchmarks(
     client_threads: int = 8,
     check_regressions: bool = True,
 ) -> dict[str, object]:
+    """Execute the end-to-end 2-layer MLP benchmark suite across all 4 modes.
+
+    Args:
+        iterations: Number of timed iterations per batch size for sync/async modes.
+        warmup: Number of warmup iterations per batch size.
+        dynamic_requests: Total concurrent requests per batch size for `DynamicBatcher`.
+        client_threads: Number of concurrent Python client threads for `DynamicBatcher`.
+        check_regressions: Whether to run `verify_benchmark_regressions` on the results.
+
+    Returns:
+        Dictionary containing environment metadata, benchmark entries per mode, and
+        regression check results.
+    """
     in_features = 64
     model_bytes = build_serving_mlp_onnx_bytes(
         in_features=in_features, hidden_features=128, out_features=16
@@ -595,6 +784,7 @@ def run_all_benchmarks(
 
 
 def main() -> None:
+    """Parse CLI arguments and run the end-to-end 2-layer MLP benchmark suite."""
     parser = argparse.ArgumentParser(
         description="Pyreth End-to-End Throughput & Latency Serving Benchmark Suite"
     )

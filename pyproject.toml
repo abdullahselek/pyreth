@@ -36,6 +36,13 @@ dev = [
     "pytest>=7.0",
     "ruff>=0.4.0",
 ]
+benchmarks = [
+    "huggingface-hub>=1.0.0",
+    "onnx>=1.17.0",
+    "onnxscript>=0.2.0",
+    "torch>=2.6.0",
+    "transformers>=4.48.0",
+]
 
 [build-system]
 requires = ["scikit-build-core>=0.9.0", "nanobind>=2.4.0"]
