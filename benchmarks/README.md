@@ -254,7 +254,67 @@ Model: `google/mobilenet_v2_1.0_224` exported from HuggingFace (`pixel_values: [
 
 ---
 
-## 6. Automated Regression Checks & Reproduction
+## 6. HuggingFace Small LLM Prefill Benchmark (`HuggingFaceTB/SmolLM2-135M`)
+
+Executed via:
+
+```bash
+uv run python benchmarks/benchmark_small_llm.py --iterations 4 --warmup 1 --dynamic-requests 64
+```
+
+Model: `HuggingFaceTB/SmolLM2-135M` prefill (`use_cache=False`) exported from HuggingFace (`input_ids: [batch_size, 32]` `int64`, `attention_mask: [batch_size, 32]` `int64` $\rightarrow$ `logits: [batch_size, 32, 49152]` `float32`, Arena Block Size: `786,496 KiB`).
+
+### 6.1 Synchronous `InferenceSession.run` (Heap-Allocated Outputs)
+
+| Batch Size | P50 Latency (us) | P90 Latency (us) | P99 Latency (us) | P99 Latency (ms) | Throughput (Req/sec) | Throughput (Samples/sec) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **1** | 70,589.65 | 70,687.53 | 70,717.35 | 70.7174 | 14.2 | 14.2 |
+| **2** | 138,535.79 | 138,747.02 | 138,783.30 | 138.7833 | 7.2 | 14.4 |
+| **4** | 273,786.96 | 274,106.66 | 274,167.15 | 274.1672 | 3.7 | **14.6** |
+| **8** | 547,806.44 | 548,278.72 | 548,453.08 | 548.4531 | 1.8 | **14.6** |
+| **16** | 1,096,281.08 | 1,098,342.72 | 1,099,137.82 | 1,099.1378 | 0.9 | **14.6** |
+| **32** | 2,194,344.13 | 2,211,412.05 | 2,216,922.52 | 2,216.9225 | 0.5 | **14.6** |
+| **64** | 4,536,347.56 | 4,564,372.89 | 4,567,322.96 | 4,567.3230 | 0.2 | 14.1 |
+
+### 6.2 Synchronous `InferenceSession.run` (`ArenaAllocator` O(1) Reset Reuse)
+
+| Batch Size | P50 Latency (us) | P90 Latency (us) | P99 Latency (us) | P99 Latency (ms) | Throughput (Req/sec) | Throughput (Samples/sec) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **1** | 70,691.94 | 70,794.98 | 70,826.65 | 70.8266 | 14.2 | 14.2 |
+| **2** | 138,999.75 | 139,050.12 | 139,068.99 | 139.0690 | 7.2 | 14.4 |
+| **4** | 275,867.04 | 276,014.64 | 276,068.66 | 276.0687 | 3.6 | **14.5** |
+| **8** | 550,860.23 | 551,058.35 | 551,130.15 | 551.1301 | 1.8 | **14.5** |
+| **16** | 1,102,590.65 | 1,104,376.13 | 1,104,972.75 | 1,104.9728 | 0.9 | **14.5** |
+| **32** | 2,215,724.00 | 2,219,817.92 | 2,221,117.67 | 2,221.1177 | 0.5 | 14.4 |
+| **64** | 4,570,871.54 | 4,574,663.43 | 4,575,328.22 | 4,575.3282 | 0.2 | 14.0 |
+
+### 6.3 Asynchronous `InferenceSession.run_async` (`ThreadPool` + `MemoryPool`, 4 Workers)
+
+| Batch Size | P50 Latency (us) | P90 Latency (us) | P99 Latency (us) | P99 Latency (ms) | Throughput (Req/sec) | Throughput (Samples/sec) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **1** | 75,500.79 | 75,500.99 | 75,501.04 | 75.5010 | 53.0 | 53.0 |
+| **2** | 148,051.87 | 148,052.40 | 148,052.57 | 148.0526 | 27.0 | 54.0 |
+| **4** | 293,586.85 | 293,587.42 | 293,587.46 | 293.5875 | 13.6 | 54.5 |
+| **8** | 586,219.02 | 586,275.28 | 586,275.40 | 586.2754 | 6.8 | **54.6** |
+| **16** | 1,181,950.50 | 1,182,138.52 | 1,182,138.65 | 1,182.1387 | 3.4 | 54.1 |
+| **32** | 2,439,362.92 | 2,439,466.10 | 2,439,505.31 | 2,439.5053 | 1.6 | 52.5 |
+| **64** | 5,051,674.48 | 5,051,675.06 | 5,051,675.12 | 5,051.6751 | 0.8 | 50.7 |
+
+### 6.4 Concurrent `DynamicBatcher` Serving (8 Python Client Threads)
+
+| Max Batch Size | P50 Latency (us) | P90 Latency (us) | P99 Latency (us) | P99 Latency (ms) | Throughput (Req/sec) | Avg Coalesced Batch |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **1** | 637,604.67 | 1,127,152.30 | 1,202,816.14 | 1,202.8161 | 53.2 | 1.00 |
+| **2** | 666,235.19 | 1,185,344.75 | 1,185,509.14 | 1,185.5091 | 53.9 | 2.00 |
+| **4** | 735,364.40 | 1,179,113.22 | 1,179,148.39 | 1,179.1484 | **54.2** | 4.00 |
+| **8** | 882,988.15 | 1,181,553.71 | 1,181,562.84 | 1,181.5628 | 54.1 | 8.00 |
+| **16** | 1,193,102.12 | 1,194,373.71 | 1,194,442.33 | 1,194.4423 | 53.6 | 16.00 |
+| **32** | 2,383,398.19 | 2,383,589.32 | 2,383,700.93 | 2,383.7009 | 26.8 | 32.00 |
+| **64** | 4,855,166.65 | 4,855,296.64 | 4,855,423.29 | 4,855.4233 | 13.2 | **64.00** |
+
+---
+
+## 7. Automated Regression Checks & Reproduction
 
 Both benchmark suites are wired into automated testing to prevent performance or correctness regressions:
 
