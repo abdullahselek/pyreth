@@ -123,3 +123,25 @@ def test_image_classification_onnx_benchmark_smoke():
     assert len(report["async_thread_pool"]) == 2
     assert len(report["dynamic_batcher"]) == 2
     assert len(report["regression_checks"]) == 3
+
+
+def test_small_llm_onnx_benchmark_smoke():
+    llm_bench = _load_module(
+        "benchmark_small_llm",
+        "benchmarks/benchmark_small_llm.py",
+    )
+    report = llm_bench.run_small_llm_benchmarks(
+        batch_sizes=(1, 4),
+        iterations=2,
+        warmup=1,
+        dynamic_requests=8,
+        client_threads=4,
+        check_regressions=True,
+    )
+    assert report["task"] == "small_llm"
+    assert report["environment"]["arena_block_size_bytes"] >= 4 * 32 * 49152 * 4
+    assert len(report["sync_heap"]) == 2
+    assert len(report["sync_arena"]) == 2
+    assert len(report["async_thread_pool"]) == 2
+    assert len(report["dynamic_batcher"]) == 2
+    assert len(report["regression_checks"]) == 3

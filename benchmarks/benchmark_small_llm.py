@@ -234,8 +234,8 @@ def run_small_llm_benchmarks(
     cache_dir: Path = DEFAULT_CACHE_DIR,
     force_export: bool = False,
     batch_sizes: tuple[int, ...] = BATCH_SIZES,
-    iterations: int = 10,
-    warmup: int = 2,
+    iterations: int = 4,
+    warmup: int = 1,
     dynamic_requests: int = 64,
     client_threads: int = 8,
     num_workers: int = 4,
@@ -351,14 +351,14 @@ def main() -> None:
     parser.add_argument(
         "--iterations",
         type=int,
-        default=10,
-        help="Iterations per batch size for sync/async benchmarks (default: 10)",
+        default=4,
+        help="Iterations per batch size for sync/async benchmarks (default: 4)",
     )
     parser.add_argument(
         "--warmup",
         type=int,
-        default=2,
-        help="Warmup iterations per batch size (default: 2)",
+        default=1,
+        help="Warmup iterations per batch size (default: 1)",
     )
     parser.add_argument(
         "--dynamic-requests",
