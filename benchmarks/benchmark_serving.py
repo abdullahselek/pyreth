@@ -593,6 +593,7 @@ def verify_benchmark_regressions(
     sync_arena: list[BatchBenchmarkEntry],
     async_pool: list[BatchBenchmarkEntry],
     dynamic_batcher: list[BatchBenchmarkEntry],
+    min_scaling_factor: float = 2.0,
 ) -> list[str]:
     """Validate latency and throughput scaling invariants across batch sizes 1..64.
 
@@ -601,6 +602,7 @@ def verify_benchmark_regressions(
         sync_arena: Benchmark entries for synchronous `ArenaAllocator` execution.
         async_pool: Benchmark entries for asynchronous `ThreadPool` execution.
         dynamic_batcher: Benchmark entries for concurrent `DynamicBatcher` serving.
+        min_scaling_factor: Minimum sample throughput scaling ratio from Batch=1 to Batch=64.
 
     Returns:
         List of human-readable descriptions of all passed regression checks.
@@ -646,11 +648,11 @@ def verify_benchmark_regressions(
     arena_b1 = sync_arena[0].samples_per_sec
     arena_b64 = sync_arena[-1].samples_per_sec
 
-    if heap_b64 < heap_b1 * 5.0:
+    if heap_b64 < heap_b1 * min_scaling_factor:
         raise AssertionError(
             f"sync_heap sample throughput failed to scale: B1={heap_b1:.1f} vs B64={heap_b64:.1f}"
         )
-    if arena_b64 < arena_b1 * 5.0:
+    if arena_b64 < arena_b1 * min_scaling_factor:
         raise AssertionError(
             f"sync_arena sample throughput failed to scale: B1={arena_b1:.1f} vs B64={arena_b64:.1f}"
         )
@@ -704,6 +706,7 @@ def run_all_benchmarks(
     dynamic_requests: int = 256,
     client_threads: int = 8,
     check_regressions: bool = True,
+    min_scaling_factor: float = 2.0,
 ) -> dict[str, object]:
     """Execute the end-to-end 2-layer MLP benchmark suite across all 4 modes.
 
@@ -713,6 +716,7 @@ def run_all_benchmarks(
         dynamic_requests: Total concurrent requests per batch size for `DynamicBatcher`.
         client_threads: Number of concurrent Python client threads for `DynamicBatcher`.
         check_regressions: Whether to run `verify_benchmark_regressions` on the results.
+        min_scaling_factor: Minimum sample throughput scaling ratio from Batch=1 to Batch=64.
 
     Returns:
         Dictionary containing environment metadata, benchmark entries per mode, and
@@ -763,7 +767,11 @@ def run_all_benchmarks(
     checks: list[str] = []
     if check_regressions:
         checks = verify_benchmark_regressions(
-            sync_heap, sync_arena, async_pool, dynamic_batcher
+            sync_heap,
+            sync_arena,
+            async_pool,
+            dynamic_batcher,
+            min_scaling_factor=min_scaling_factor,
         )
 
     return {

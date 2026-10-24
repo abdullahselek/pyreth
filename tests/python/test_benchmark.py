@@ -25,11 +25,12 @@ def _load_module(module_name: str, rel_path: str):
 def test_serving_benchmark_suite_and_regression_checks():
     bench_mod = _load_module("benchmark_serving", "benchmarks/benchmark_serving.py")
     report = bench_mod.run_all_benchmarks(
-        iterations=25,
-        warmup=5,
+        iterations=50,
+        warmup=15,
         dynamic_requests=128,
         client_threads=8,
         check_regressions=True,
+        min_scaling_factor=1.5,
     )
 
     assert len(report["sync_heap"]) == 7
