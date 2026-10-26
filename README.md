@@ -15,6 +15,10 @@
 
 **Pyreth** is a production-grade AI inference runtime engineered to eliminate memory allocation bottlenecks, lock contention, and Python Global Interpreter Lock (GIL) serialization on the inference hot path. Built around a zero-copy C++20 core (`EngineCore`) with `nanobind` Python bindings, Pyreth pairs a lock-free work-stealing scheduler and 64-byte SIMD-aligned memory arenas with ONNX Runtime graph execution and dynamic request batching.
 
+[![PyPI Version](https://img.shields.io/pypi/v/pyreth.svg)](https://img.shields.io/pypi/v/pyreth.svg)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/pyreth?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/pyreth)
+[![Python versions](https://img.shields.io/pypi/pyversions/pyreth.svg)](https://img.shields.io/pypi/pyversions/pyreth.svg)
+
 ### Architecture
 
 ```
