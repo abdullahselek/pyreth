@@ -146,3 +146,19 @@ def test_small_llm_onnx_benchmark_smoke():
     assert len(report["async_thread_pool"]) == 2
     assert len(report["dynamic_batcher"]) == 2
     assert len(report["regression_checks"]) == 3
+
+
+def test_regression_onnx_export_verification_smoke():
+    reg_bench = _load_module(
+        "benchmark_regression",
+        "benchmarks/benchmark_regression.py",
+    )
+    onnx_path, seq_len = reg_bench.export_regression_to_onnx(
+        seq_len=8,
+        force_export=False,
+        verify_numerics=True,
+    )
+    session = reg_bench.create_default_session(onnx_path)
+    assert session.model_info.has_dynamic_batch
+    assert session.get_input_info("input_ids").shape == (-1, seq_len)
+    assert session.get_output_info("predictions").shape == (-1, 1)
