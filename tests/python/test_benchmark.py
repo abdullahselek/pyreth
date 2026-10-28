@@ -162,3 +162,25 @@ def test_regression_onnx_export_verification_smoke():
     assert session.model_info.has_dynamic_batch
     assert session.get_input_info("input_ids").shape == (-1, seq_len)
     assert session.get_output_info("predictions").shape == (-1, 1)
+
+
+def test_regression_onnx_benchmark_smoke():
+    reg_bench = _load_module(
+        "benchmark_regression",
+        "benchmarks/benchmark_regression.py",
+    )
+    report = reg_bench.run_regression_benchmarks(
+        seq_len=8,
+        batch_sizes=(1, 4),
+        iterations=2,
+        warmup=1,
+        dynamic_requests=8,
+        client_threads=4,
+        check_regressions=True,
+    )
+    assert report["task"] == "regression"
+    assert len(report["sync_heap"]) == 2
+    assert len(report["sync_arena"]) == 2
+    assert len(report["async_thread_pool"]) == 2
+    assert len(report["dynamic_batcher"]) == 2
+    assert len(report["regression_checks"]) == 3

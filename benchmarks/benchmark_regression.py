@@ -13,7 +13,13 @@ from pathlib import Path
 import numpy as np
 import onnx
 import torch
-from common import DEFAULT_CACHE_DIR, create_default_session
+from common import (
+    BATCH_SIZES,
+    DEFAULT_CACHE_DIR,
+    create_default_session,
+    print_benchmark_report,
+    run_model_benchmark_suite,
+)
 from huggingface_hub import hf_hub_download
 from pyreth import InferenceSession, Tensor
 from torch import nn
@@ -250,10 +256,103 @@ def verify_onnx_equivalence(
     return session
 
 
+def run_regression_benchmarks(
+    model_id: str = DEFAULT_MODEL_ID,
+    seq_len: int = DEFAULT_SEQ_LEN,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+    force_export: bool = False,
+    batch_sizes: tuple[int, ...] = BATCH_SIZES,
+    iterations: int = 20,
+    warmup: int = 5,
+    dynamic_requests: int = 64,
+    client_threads: int = 8,
+    num_workers: int = 4,
+    check_regressions: bool = True,
+) -> dict[str, object]:
+    """Exports a HuggingFace regression model and runs all four Pyreth benchmark modes.
+
+    Args:
+        model_id: HuggingFace regression model identifier.
+        seq_len: Fixed token sequence length for the model input.
+        cache_dir: Directory used for local export caching.
+        force_export: If True, re-export the ONNX graph even if cached.
+        batch_sizes: Batch sizes to benchmark.
+        iterations: Timed iterations per batch size for sync/async benchmarks.
+        warmup: Warmup iterations per batch size.
+        dynamic_requests: Total requests submitted concurrently for `DynamicBatcher`.
+        client_threads: Number of concurrent Python threads in `DynamicBatcher`.
+        num_workers: Number of C++ worker threads used by the benchmark runtime.
+        check_regressions: If True, run the shared regression assertions.
+
+    Returns:
+        A dictionary containing the benchmark report, environment metadata, and model
+        details.
+    """
+    onnx_path, resolved_seq_len = export_regression_to_onnx(
+        model_id=model_id,
+        cache_dir=cache_dir,
+        seq_len=seq_len,
+        force_export=force_export,
+        verify_numerics=True,
+    )
+    session = create_default_session(onnx_path)
+
+    rng = np.random.default_rng(42)
+    cached_inputs: dict[int, dict[str, Tensor]] = {}
+    for b in batch_sizes:
+        ids_arr = rng.integers(0, 1000, size=(b, resolved_seq_len), dtype=np.int64)
+        mask_arr = np.ones((b, resolved_seq_len), dtype=np.int64)
+        cached_inputs[b] = {
+            "input_ids": Tensor.from_numpy(ids_arr),
+            "attention_mask": Tensor.from_numpy(mask_arr),
+        }
+
+    def build_input(batch_size: int) -> dict[str, Tensor]:
+        if batch_size not in cached_inputs:
+            ids_arr = rng.integers(
+                0,
+                1000,
+                size=(batch_size, resolved_seq_len),
+                dtype=np.int64,
+            )
+            mask_arr = np.ones((batch_size, resolved_seq_len), dtype=np.int64)
+            cached_inputs[batch_size] = {
+                "input_ids": Tensor.from_numpy(ids_arr),
+                "attention_mask": Tensor.from_numpy(mask_arr),
+            }
+        return cached_inputs[batch_size]
+
+    report = run_model_benchmark_suite(
+        session=session,
+        input_builder=build_input,
+        model_id=model_id,
+        task_name="regression",
+        batch_sizes=batch_sizes,
+        iterations=iterations,
+        warmup=warmup,
+        dynamic_requests=dynamic_requests,
+        client_threads=client_threads,
+        num_workers=num_workers,
+        check_regressions=check_regressions,
+        max_p99_ms=30000.0,
+        min_scaling_factor=1.1,
+    )
+    report["model_details"] = {
+        "onnx_path": str(onnx_path),
+        "seq_len": resolved_seq_len,
+        "input_shapes": {
+            "input_ids": ["batch_size", resolved_seq_len],
+            "attention_mask": ["batch_size", resolved_seq_len],
+        },
+        "output_shape": ["batch_size", 1],
+    }
+    return report
+
+
 def main() -> None:
-    """Parses CLI arguments and exports/validates the regression ONNX artifact."""
+    """Parses command-line arguments and runs the regression benchmark suite."""
     parser = argparse.ArgumentParser(
-        description="Pyreth regression model export and verification"
+        description="Pyreth Regression Model HuggingFace-to-ONNX Benchmark Suite"
     )
     parser.add_argument(
         "--model-id",
@@ -262,37 +361,81 @@ def main() -> None:
         help=f"HuggingFace model ID (default: {DEFAULT_MODEL_ID})",
     )
     parser.add_argument(
+        "--seq-len",
+        type=int,
+        default=DEFAULT_SEQ_LEN,
+        help=f"Fixed sequence length for benchmark inputs (default: {DEFAULT_SEQ_LEN})",
+    )
+    parser.add_argument(
         "--cache-dir",
         type=Path,
         default=DEFAULT_CACHE_DIR,
         help="Directory to cache exported ONNX models",
     )
     parser.add_argument(
-        "--seq-len",
-        type=int,
-        default=DEFAULT_SEQ_LEN,
-        help="Fixed sequence length used during export (default: 32)",
-    )
-    parser.add_argument(
         "--force-export",
         action="store_true",
         help="Re-export the ONNX model even if cached",
     )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=20,
+        help="Iterations per batch size for sync/async benchmarks (default: 20)",
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=5,
+        help="Warmup iterations per batch size (default: 5)",
+    )
+    parser.add_argument(
+        "--dynamic-requests",
+        type=int,
+        default=64,
+        help="Total concurrent requests per batch size for DynamicBatcher (default: 64)",
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=8,
+        help="Concurrent Python client threads for DynamicBatcher (default: 8)",
+    )
+    parser.add_argument(
+        "--json-out",
+        type=Path,
+        default=None,
+        help="Optional path to write JSON benchmark report",
+    )
+    parser.add_argument(
+        "--skip-regression-check",
+        action="store_true",
+        help="Skip automated regression assertions",
+    )
     args = parser.parse_args()
 
-    onnx_path, seq_len = export_regression_to_onnx(
+    report = run_regression_benchmarks(
         model_id=args.model_id,
-        cache_dir=args.cache_dir,
         seq_len=args.seq_len,
+        cache_dir=args.cache_dir,
         force_export=args.force_export,
-        verify_numerics=True,
+        iterations=args.iterations,
+        warmup=args.warmup,
+        dynamic_requests=args.dynamic_requests,
+        client_threads=args.threads,
+        check_regressions=not args.skip_regression_check,
     )
-    session = create_default_session(onnx_path)
-    info = session.get_output_info("predictions")
-    print(f"Regression ONNX export verified at: {onnx_path}")
-    print(f"Input shape: (-1, {seq_len})")
-    print(f"Output shape: {info.shape}")
-    print(f"Dynamic batch metadata: {session.model_info.has_dynamic_batch}")
+    details = report["model_details"]  # type: ignore[index]
+    print_benchmark_report(
+        title="Pyreth Regression Benchmark Suite",
+        model_desc=(
+            f"{args.model_id} (Input: [batch_size, {details['seq_len']}] Int64 -> "
+            f"Output: {details['output_shape']} Float32)"
+        ),
+        report=report,
+        client_threads=args.threads,
+        json_out=args.json_out,
+    )
 
 
 if __name__ == "__main__":

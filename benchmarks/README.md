@@ -314,7 +314,67 @@ Model: `HuggingFaceTB/SmolLM2-135M` prefill (`use_cache=False`) exported from Hu
 
 ---
 
-## 7. Automated Regression Checks & Reproduction
+## 7. HuggingFace Regression Benchmark (`prajjwal1/bert-tiny`)
+
+Executed via:
+
+```bash
+uv run python benchmarks/benchmark_regression.py
+```
+
+Model: `prajjwal1/bert-tiny` configured for a continuous regression head (`input_ids: [batch_size, 32]` `int64`, `attention_mask: [batch_size, 32]` `int64` $\rightarrow$ `predictions: [batch_size, 1]` `float32`).
+
+### 7.1 Synchronous `InferenceSession.run` (Heap-Allocated Outputs)
+
+| Batch Size | P50 Latency (us) | P90 Latency (us) | P99 Latency (us) | P99 Latency (ms) | Throughput (Req/sec) | Throughput (Samples/sec) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **1** | 338.94 | 347.69 | 357.03 | 0.3570 | 2,933.3 | 2,933.3 |
+| **2** | 607.58 | 625.65 | 643.41 | 0.6434 | 1,634.6 | 3,269.2 |
+| **4** | 1,153.19 | 1,236.67 | 1,276.29 | 1.2763 | 854.7 | 3,418.8 |
+| **8** | 2,278.44 | 2,312.40 | 2,343.36 | 2.3434 | 439.9 | 3,519.1 |
+| **16** | 4,463.85 | 4,547.23 | 4,574.41 | 4.5744 | 223.6 | 3,578.2 |
+| **32** | 8,954.90 | 9,099.18 | 9,136.76 | 9.1368 | 111.6 | 3,571.3 |
+| **64** | 17,755.33 | 17,942.07 | 18,023.38 | 18.0234 | 56.2 | 3,595.7 |
+
+### 7.2 Synchronous `InferenceSession.run` (`ArenaAllocator` O(1) Reset Reuse)
+
+| Batch Size | P50 Latency (us) | P90 Latency (us) | P99 Latency (us) | P99 Latency (ms) | Throughput (Req/sec) | Throughput (Samples/sec) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **1** | 302.85 | 316.64 | 327.28 | 0.3273 | 3,272.8 | 3,272.8 |
+| **2** | 583.52 | 606.36 | 611.59 | 0.6116 | 1,699.0 | 3,398.1 |
+| **4** | 1,146.04 | 1,164.07 | 1,177.65 | 1.1776 | 872.9 | 3,491.6 |
+| **8** | 2,259.96 | 2,316.18 | 2,372.91 | 2.3729 | 440.3 | 3,522.6 |
+| **16** | 4,466.31 | 4,535.25 | 4,642.95 | 4.6429 | 222.9 | 3,566.2 |
+| **32** | 8,933.73 | 9,206.18 | 9,416.75 | 9.4167 | 111.2 | 3,558.2 |
+| **64** | 17,869.50 | 17,985.68 | 18,032.09 | 18.0321 | 56.0 | 3,581.1 |
+
+### 7.3 Asynchronous `InferenceSession.run_async` (`ThreadPool` + `MemoryPool`, 4 Workers)
+
+| Batch Size | P50 Latency (us) | P90 Latency (us) | P99 Latency (us) | P99 Latency (ms) | Throughput (Req/sec) | Throughput (Samples/sec) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **1** | 1,206.98 | 1,871.03 | 2,032.44 | 2.0324 | 9,716.2 | 9,716.2 |
+| **2** | 2,502.85 | 3,877.57 | 4,046.81 | 4.0468 | 4,921.9 | 9,843.7 |
+| **4** | 4,056.83 | 6,567.13 | 6,659.69 | 6.6597 | 2,996.3 | 11,985.3 |
+| **8** | 7,498.94 | 12,380.30 | 12,473.59 | 12.4736 | 1,600.3 | 12,802.7 |
+| **16** | 14,510.40 | 24,169.50 | 24,200.32 | 24.2003 | 825.9 | 13,215.0 |
+| **32** | 28,961.31 | 48,072.66 | 48,096.92 | 48.0969 | 415.7 | 13,301.4 |
+| **64** | 57,258.75 | 95,222.13 | 95,498.28 | 95.4983 | 209.3 | 13,392.0 |
+
+### 7.4 Concurrent `DynamicBatcher` Serving (8 Python Threads)
+
+| Max Batch Size | P50 Latency (us) | P90 Latency (us) | P99 Latency (us) | P99 Latency (ms) | Throughput (Req/sec) | Avg Coalesced Batch |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **1** | 2,883.81 | 5,046.28 | 5,454.20 | 5.4542 | 9,785.2 | 1.00 |
+| **2** | 3,284.54 | 5,250.15 | 5,879.07 | 5.8791 | 9,288.6 | 2.00 |
+| **4** | 3,362.79 | 5,212.78 | 5,275.38 | 5.2754 | 10,665.0 | 4.00 |
+| **8** | 3,834.25 | 5,022.75 | 5,041.28 | 5.0413 | 11,340.0 | 8.00 |
+| **16** | 5,019.21 | 5,146.61 | 5,168.85 | 5.1689 | 10,961.6 | 16.00 |
+| **32** | 9,813.98 | 9,911.78 | 9,982.64 | 9.9826 | 6,082.9 | 32.00 |
+| **64** | 20,452.42 | 20,614.47 | 20,671.40 | 20.6714 | 3,044.6 | 64.00 |
+
+---
+
+## 8. Automated Regression Checks & Reproduction
 
 Both benchmark suites are wired into automated testing to prevent performance or correctness regressions:
 
