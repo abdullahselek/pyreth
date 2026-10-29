@@ -759,6 +759,12 @@ dependencies = [
     { name = "numpy" },
 ]
 
+[package.optional-dependencies]
+onnx-conversion = [
+    { name = "onnx" },
+    { name = "torch" },
+]
+
 [package.dev-dependencies]
 benchmarks = [
     { name = "huggingface-hub" },
@@ -773,7 +779,12 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "numpy", specifier = ">=2.5.4" }]
+requires-dist = [
+    { name = "numpy", specifier = ">=2.5.4" },
+    { name = "onnx", marker = "extra == 'onnx-conversion'", specifier = ">=1.17.0" },
+    { name = "torch", marker = "extra == 'onnx-conversion'", specifier = ">=2.6.0" },
+]
+provides-extras = ["onnx-conversion"]
 
 [package.metadata.requires-dev]
 benchmarks = [

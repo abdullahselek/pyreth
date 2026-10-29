@@ -26,6 +26,12 @@ dependencies = [
     "numpy>=2.5.4",
 ]
 
+[project.optional-dependencies]
+onnx-conversion = [
+    "onnx>=1.17.0",
+    "torch>=2.6.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/abdullahselek/pyreth"
 Repository = "https://github.com/abdullahselek/pyreth"
