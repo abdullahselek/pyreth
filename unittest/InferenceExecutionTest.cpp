@@ -351,6 +351,40 @@ TEST(InferenceExecutionTest, SynchronousRunOnIdentityModel) {
   }
 }
 
+TEST(InferenceExecutionTest, DynamicBatchIdentityModelLoadsSchemaAndRunsDifferentBatchSize) {
+  auto session = InferenceSession::create(buildIdentityModel()).value();
+  ASSERT_TRUE(session.isValid());
+  ASSERT_TRUE(session.getModelInfo().hasDynamicBatch());
+  ASSERT_EQ(session.getModelInfo().inputs.size(), 1u);
+  EXPECT_EQ(session.getModelInfo().inputs[0].name, "x");
+  EXPECT_EQ(session.getModelInfo().inputs[0].shape, (std::vector<int64_t>{-1, 4}));
+
+  auto input = Tensor::create(Shape{5, 4}, DataType::Float32).value();
+  input.fill<float>(3.5f);
+  auto result = session.run({input});
+  ASSERT_TRUE(result.isOk()) << result.error().message();
+  ASSERT_EQ(result.value().size(), 1u);
+  EXPECT_EQ(result.value()[0].shape(), (Shape{5, 4}));
+  EXPECT_EQ(result.value()[0].dtype(), DataType::Float32);
+  for (int64_t i = 0; i < 20; ++i) {
+    EXPECT_FLOAT_EQ(result.value()[0].data<float>()[i], 3.5f);
+  }
+}
+
+TEST(InferenceExecutionTest, RunRejectsInputWithInvalidRankOrDataType) {
+  auto session = InferenceSession::create(buildIdentityModel()).value();
+
+  auto wrong_rank = Tensor::create(Shape{2, 2, 2}, DataType::Float32).value();
+  auto rank_result = session.run({wrong_rank});
+  ASSERT_FALSE(rank_result.isOk());
+  EXPECT_EQ(rank_result.error().code(), StatusCode::INVALID_DIMENSIONS);
+
+  auto wrong_dtype = Tensor::create(Shape{2, 4}, DataType::Int32).value();
+  auto dtype_result = session.run({wrong_dtype});
+  ASSERT_FALSE(dtype_result.isOk());
+  EXPECT_EQ(dtype_result.error().code(), StatusCode::INVALID_ARGUMENT);
+}
+
 TEST(InferenceExecutionTest, SynchronousRunOnArithmeticModelAndNamedInputs) {
   auto session = InferenceSession::create(buildArithmeticModel()).value();
 
