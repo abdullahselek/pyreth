@@ -7,6 +7,7 @@ session. PyTorch and ONNX are optional dependencies and are imported only when
 these helpers are called.
 """
 
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,10 @@ import numpy as np
 
 from ._core import ExecutionProvider, InferenceSession, SessionConfig
 
+DEFAULT_EXPORT_CACHE_DIR = Path(__file__).resolve().parents[2] / ".onnx_cache"
+
 __all__ = [
+    "DEFAULT_EXPORT_CACHE_DIR",
     "export_torch_model_to_onnx",
     "load_onnx_session_from_torch",
     "validate_onnx_export",
@@ -76,11 +80,48 @@ def _model_input_names(
     return tuple(f"{fallback_prefix}_{idx}" for idx in range(size))
 
 
+def _sanitize_export_name(name: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._")
+    return sanitized or "exported_model"
+
+
+def _resolve_export_path(
+    output_path: str | Path | None,
+    *,
+    cache_dir: str | Path | None = None,
+    model: Any | None = None,
+    default_name: str | None = None,
+) -> Path:
+    if output_path is not None:
+        resolved = Path(output_path)
+        if resolved.exists() and resolved.is_dir():
+            model_name = (
+                _sanitize_export_name(model.__class__.__name__)
+                if model is not None
+                else default_name or "exported_model"
+            )
+            return resolved / f"{model_name}.onnx"
+        if resolved.suffix.lower() != ".onnx":
+            resolved = resolved.with_suffix(".onnx")
+        return resolved
+
+    base_dir = Path(cache_dir) if cache_dir is not None else DEFAULT_EXPORT_CACHE_DIR
+    model_name = (
+        _sanitize_export_name(model.__class__.__name__)
+        if model is not None
+        else default_name or "exported_model"
+    )
+    base_dir.mkdir(parents=True, exist_ok=True)
+    return base_dir / f"{model_name}.onnx"
+
+
 def export_torch_model_to_onnx(
     model: Any,
     sample_inputs: Any,
-    output_path: str | Path,
+    output_path: str | Path | None = None,
     *,
+    cache_dir: str | Path | None = None,
+    force_export: bool = False,
     dynamic_batch: bool = True,
     opset_version: int = 17,
     input_names: Sequence[str] | None = None,
@@ -141,10 +182,21 @@ def export_torch_model_to_onnx(
     if not model_inputs:
         raise ValueError("At least one sample input tensor is required for export.")
 
-    output_file = Path(output_path)
-    if output_file.suffix.lower() != ".onnx":
-        output_file = output_file.with_suffix(".onnx")
+    output_file = _resolve_export_path(
+        output_path,
+        cache_dir=cache_dir,
+        model=model,
+        default_name=model.__class__.__name__.lower(),
+    )
     output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    if output_file.exists() and not force_export:
+        if not validate:
+            return output_file
+        validate_onnx_export(
+            output_file, model, sample_inputs, dynamic_batch=dynamic_batch
+        )
+        return output_file
 
     dynamic_axes: dict[str, dict[int, str]] = {}
     for name in resolved_input_names:
@@ -167,6 +219,13 @@ def export_torch_model_to_onnx(
         dynamic_axes.setdefault(name, {0: "batch_size"} if dynamic_batch else {})
 
     with torch.no_grad():
+        export_training_mode = training
+        if hasattr(torch.onnx, "TrainingMode"):
+            export_training_mode = (
+                torch.onnx.TrainingMode.TRAINING
+                if training
+                else torch.onnx.TrainingMode.EVAL
+            )
         torch.onnx.export(
             model,
             model_inputs,
@@ -177,7 +236,10 @@ def export_torch_model_to_onnx(
             input_names=list(resolved_input_names),
             output_names=list(output_names_tuple),
             dynamic_axes=dynamic_axes,
-            training=training,
+            dynamic_shapes=None,
+            training=export_training_mode,
+            dynamo=False,
+            verbose=False,
         )
 
     if validate:
@@ -320,6 +382,8 @@ def load_onnx_session_from_torch(
     sample_inputs: Any,
     output_path: str | Path | None = None,
     *,
+    cache_dir: str | Path | None = None,
+    force_export: bool = False,
     dynamic_batch: bool = True,
     session_config: SessionConfig | None = None,
     validate: bool = True,
@@ -347,15 +411,12 @@ def load_onnx_session_from_torch(
             requested and ONNX is unavailable.
     """
 
-    if output_path is None:
-        output_path = (
-            Path.cwd() / f"{model.__class__.__name__.lower()}_pyreth_export.onnx"
-        )
-
     export_path = export_torch_model_to_onnx(
         model,
         sample_inputs,
         output_path,
+        cache_dir=cache_dir,
+        force_export=force_export,
         dynamic_batch=dynamic_batch,
         validate=validate,
     )

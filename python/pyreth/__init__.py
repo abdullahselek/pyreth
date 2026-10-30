@@ -39,6 +39,7 @@ from ._core import (
     has_hardware_acceleration,
 )
 from .onnx_conversion import (
+    DEFAULT_EXPORT_CACHE_DIR,
     export_torch_model_to_onnx,
     load_onnx_session_from_torch,
     validate_onnx_export,
@@ -76,6 +77,7 @@ def _from_torch(
 InferenceSession.from_torch = staticmethod(_from_torch)
 
 __all__ = [
+    "DEFAULT_EXPORT_CACHE_DIR",
     "ArenaAllocator",
     "Backend",
     "BatcherConfig",
