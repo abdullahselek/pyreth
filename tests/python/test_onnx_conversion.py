@@ -21,9 +21,11 @@ from pyreth import (
 )
 
 
-@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
-def test_export_torch_model_to_onnx_round_trip(tmp_path: Path):
-    """Exports a model and confirms Pyreth inference matches PyTorch."""
+@pytest.fixture
+def tiny_mlp():
+    """Return a small deterministic MLP for export tests."""
+    if torch is None or onnx is None:  # pragma: no cover - guarded by test skips
+        pytest.skip("torch/onnx are required")
 
     class TinyMLP(torch.nn.Module):
         def __init__(self):
@@ -34,7 +36,14 @@ def test_export_torch_model_to_onnx_round_trip(tmp_path: Path):
             return self.linear(x)
 
     model = TinyMLP().eval()
-    x = torch.randn(2, 4, dtype=torch.float32)
+    return model, torch.randn(2, 4, dtype=torch.float32)
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_export_torch_model_to_onnx_round_trip(tmp_path: Path, tiny_mlp):
+    """Exports a model and confirms Pyreth inference matches PyTorch."""
+
+    model, x = tiny_mlp
     out_path = tmp_path / "tiny_mlp.onnx"
 
     exported = export_torch_model_to_onnx(
@@ -61,19 +70,10 @@ def test_export_torch_model_to_onnx_round_trip(tmp_path: Path):
 
 
 @pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
-def test_inference_session_from_torch_wrapper(tmp_path: Path):
+def test_inference_session_from_torch_wrapper(tmp_path: Path, tiny_mlp):
     """Creates an inference session directly from a PyTorch model."""
 
-    class TinyClassifier(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.linear = torch.nn.Linear(2, 1)
-
-        def forward(self, features):
-            return self.linear(features)
-
-    model = TinyClassifier().eval()
-    sample = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+    model, sample = tiny_mlp
     session = InferenceSession.from_torch(
         model,
         sample,
@@ -85,6 +85,23 @@ def test_inference_session_from_torch_wrapper(tmp_path: Path):
     expected = model(sample).detach().numpy()
     actual = session.run_numpy({"input_0": sample.detach().numpy()})[0]
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_export_torch_model_to_onnx_uses_cache_dir(tmp_path: Path, tiny_mlp):
+    """Stores cached exports beneath the configured cache directory."""
+
+    model, x = tiny_mlp
+    export_path = export_torch_model_to_onnx(
+        model,
+        x,
+        output_path=None,
+        cache_dir=tmp_path / "models",
+        validate=False,
+    )
+
+    assert export_path.parent == tmp_path / "models"
+    assert export_path.exists()
 
 
 @pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
