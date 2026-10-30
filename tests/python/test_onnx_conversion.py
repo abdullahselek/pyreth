@@ -160,7 +160,9 @@ def test_export_preserves_supported_dtype_and_dynamic_batch(
 
     assert session.model_info.has_dynamic_batch
     assert session.model_info.inputs[0].shape == (-1, 4)
-    assert session.model_info.inputs[0].dtype.name.lower() == numpy_dtype.__name__.lower()
+    assert (
+        session.model_info.inputs[0].dtype.name.lower() == numpy_dtype.__name__.lower()
+    )
     runtime_input = np.ones((5, 4), dtype=numpy_dtype)
     actual = session.run_numpy({"input_0": runtime_input})[0]
     np.testing.assert_array_equal(actual, runtime_input)
