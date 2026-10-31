@@ -14,9 +14,12 @@ except ModuleNotFoundError:  # pragma: no cover
     onnx = None
 
 from pyreth import (
+    ConversionMetadata,
     ExecutionProvider,
     InferenceSession,
     SessionConfig,
+    TensorSpec,
+    build_conversion_contract,
     export_torch_model_to_onnx,
 )
 
@@ -203,5 +206,209 @@ def test_export_supports_multiple_inputs_and_outputs(
 def test_export_rejects_invalid_contract(identity_model):
     """Rejects missing sample inputs before attempting export."""
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="sample_inputs is required"):
         export_torch_model_to_onnx(identity_model, None, "unused.onnx")
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_build_conversion_contract_metadata(tiny_mlp):
+    """Validates that build_conversion_contract infers shapes, dtypes, and dynamic axes."""
+    model, x = tiny_mlp
+    contract = build_conversion_contract(
+        model,
+        x,
+        dynamic_batch=True,
+        input_names=["features"],
+        output_names=["logits"],
+    )
+
+    assert isinstance(contract, ConversionMetadata)
+    assert contract.model_name == "TinyMLP"
+    assert contract.dynamic_batch is True
+    assert len(contract.inputs) == 1
+    assert contract.inputs[0] == TensorSpec(
+        name="features", shape=(-1, 4), dtype="float32"
+    )
+    assert len(contract.outputs) == 1
+    assert contract.outputs[0] == TensorSpec(
+        name="logits", shape=(-1, 3), dtype="float32"
+    )
+    assert contract.dynamic_axes == {
+        "features": {0: "batch_size"},
+        "logits": {0: "batch_size"},
+    }
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+@pytest.mark.parametrize(
+    "rank,shape", [(1, (4,)), (2, (2, 4)), (3, (2, 3, 4)), (4, (2, 3, 8, 8))]
+)
+def test_build_conversion_contract_supports_ranks_1d_to_4d(identity_model, rank, shape):
+    """Validates that 1D, 2D, 3D, and 4D tensor inputs are supported in conversion contract."""
+    x = torch.randn(shape, dtype=torch.float32)
+    contract = build_conversion_contract(identity_model, x, dynamic_batch=True)
+
+    expected_shape = (-1, *shape[1:])
+    assert contract.inputs[0].shape == expected_shape
+    assert contract.inputs[0].dtype == "float32"
+    assert contract.outputs[0].shape == expected_shape
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_build_conversion_contract_dict_outputs():
+    """Validates dictionary outputs and automatic output name resolution."""
+
+    class DictModule(torch.nn.Module):
+        def forward(self, x):
+            return {"logits": x * 2.0, "probabilities": torch.softmax(x, dim=-1)}
+
+    model = DictModule().eval()
+    x = torch.randn(2, 4, dtype=torch.float32)
+    contract = build_conversion_contract(model, x, dynamic_batch=True)
+
+    assert [spec.name for spec in contract.outputs] == ["logits", "probabilities"]
+    assert contract.outputs[0].shape == (-1, 4)
+    assert contract.outputs[1].shape == (-1, 4)
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_conversion_contract_rejects_non_module():
+    """Rejects objects that are not instances of torch.nn.Module."""
+    with pytest.raises(TypeError, match="model must be an instance of torch.nn.Module"):
+        build_conversion_contract(object(), torch.randn(2, 4))
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_conversion_contract_rejects_unsupported_dtype(identity_model):
+    """Rejects tensors with dtypes outside the supported compatibility matrix."""
+    x_complex = torch.randn(2, 4, dtype=torch.complex64)
+    with pytest.raises(TypeError, match="Unsupported dtype 'complex64'"):
+        build_conversion_contract(identity_model, x_complex)
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_conversion_contract_rejects_unsupported_rank(identity_model):
+    """Rejects 0D scalars and 5D+ tensors with actionable error messages."""
+    x_scalar = torch.tensor(3.14, dtype=torch.float32)
+    with pytest.raises(ValueError, match="Unsupported rank 0"):
+        build_conversion_contract(identity_model, x_scalar)
+
+    x_5d = torch.randn(1, 2, 3, 4, 5, dtype=torch.float32)
+    with pytest.raises(ValueError, match="Unsupported rank 5"):
+        build_conversion_contract(identity_model, x_5d)
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_conversion_contract_rejects_mismatched_names(identity_model, tiny_mlp):
+    """Rejects input and output names whose lengths do not match tensor counts."""
+    model, x = tiny_mlp
+    with pytest.raises(
+        ValueError, match="input_names must match the number of input tensors"
+    ):
+        build_conversion_contract(model, x, input_names=["in1", "in2"])
+
+    with pytest.raises(
+        ValueError, match="output_names must match the number of model outputs"
+    ):
+        build_conversion_contract(model, x, output_names=["out1", "out2"])
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_export_torch_model_to_onnx_cnn_4d(tmp_path: Path):
+    """Exports a 4D Conv2d CNN model and verifies round-trip inference in Pyreth."""
+
+    class TinyCNN(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = torch.nn.Conv2d(3, 8, kernel_size=3, padding=1)
+
+        def forward(self, x):
+            return self.conv(x)
+
+    model = TinyCNN().eval()
+    x = torch.randn(2, 3, 16, 16, dtype=torch.float32)
+    out_path = tmp_path / "tiny_cnn.onnx"
+
+    exported = export_torch_model_to_onnx(
+        model,
+        x,
+        out_path,
+        dynamic_batch=True,
+        validate=True,
+    )
+    assert exported.exists()
+    session = InferenceSession(str(exported))
+    assert session.model_info.has_dynamic_batch
+    assert session.model_info.inputs[0].shape == (-1, 3, 16, 16)
+    assert session.model_info.outputs[0].shape == (-1, 8, 16, 16)
+
+    test_input = np.random.randn(3, 3, 16, 16).astype(np.float32)
+    actual = session.run_numpy([test_input])[0]
+    expected = model(torch.from_numpy(test_input)).detach().numpy()
+    np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_export_torch_model_to_onnx_dict_outputs(tmp_path: Path):
+    """Exports a model returning a dictionary and verifies all outputs match."""
+
+    class MultiHead(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.reg = torch.nn.Linear(4, 1)
+            self.cls = torch.nn.Linear(4, 5)
+
+        def forward(self, x):
+            return {"regression": self.reg(x), "classification": self.cls(x)}
+
+    model = MultiHead().eval()
+    x = torch.randn(2, 4, dtype=torch.float32)
+    out_path = tmp_path / "multi_head.onnx"
+
+    exported = export_torch_model_to_onnx(
+        model,
+        x,
+        out_path,
+        dynamic_batch=True,
+        validate=True,
+    )
+    session = InferenceSession(str(exported))
+    assert [spec.name for spec in session.model_info.outputs] == [
+        "regression",
+        "classification",
+    ]
+    assert session.model_info.outputs[0].shape == (-1, 1)
+    assert session.model_info.outputs[1].shape == (-1, 5)
+
+    actual = session.run_numpy([x.numpy()])
+    expected = model(x)
+    np.testing.assert_allclose(
+        actual[0], expected["regression"].detach().numpy(), rtol=1e-5, atol=1e-5
+    )
+    np.testing.assert_allclose(
+        actual[1], expected["classification"].detach().numpy(), rtol=1e-5, atol=1e-5
+    )
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_export_with_custom_positional_input_names(
+    tmp_path: Path, multi_input_multi_output_model
+):
+    """Exports positional tuple inputs with custom input_names without validation failure."""
+    left = torch.randn(2, 4, dtype=torch.float32)
+    right = torch.randn(2, 4, dtype=torch.float32)
+    model = multi_input_multi_output_model
+    out_path = tmp_path / "custom_pos_names.onnx"
+
+    exported = export_torch_model_to_onnx(
+        model,
+        (left, right),
+        out_path,
+        input_names=["op_a", "op_b"],
+        output_names=["res_sum", "res_prod"],
+        dynamic_batch=True,
+        validate=True,
+    )
+    session = InferenceSession(str(exported))
+    assert [info.name for info in session.model_info.inputs] == ["op_a", "op_b"]
+    assert [info.name for info in session.model_info.outputs] == ["res_sum", "res_prod"]

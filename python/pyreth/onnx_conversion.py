@@ -9,6 +9,7 @@ these helpers are called.
 
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +19,61 @@ from ._core import ExecutionProvider, InferenceSession, SessionConfig
 
 DEFAULT_EXPORT_CACHE_DIR = Path(__file__).resolve().parents[2] / ".onnx_cache"
 
+SUPPORTED_DTYPES: frozenset[str] = frozenset(
+    {"float32", "float16", "int64", "int32", "bool"}
+)
+
+SUPPORTED_RANKS: tuple[int, ...] = (1, 2, 3, 4)
+
 __all__ = [
     "DEFAULT_EXPORT_CACHE_DIR",
+    "SUPPORTED_DTYPES",
+    "SUPPORTED_RANKS",
+    "ConversionMetadata",
+    "TensorSpec",
+    "build_conversion_contract",
     "export_torch_model_to_onnx",
     "load_onnx_session_from_torch",
     "validate_onnx_export",
 ]
+
+
+@dataclass(frozen=True)
+class TensorSpec:
+    """Specification of an input or output tensor in the conversion contract.
+
+    Attributes:
+        name: Tensor identifier used in the ONNX graph schema.
+        shape: Tensor shape tuple. Dynamic dimensions (e.g. dynamic batch) are
+            represented by -1 or symbolic strings.
+        dtype: Standardized data type string (e.g. 'float32', 'int64').
+    """
+
+    name: str
+    shape: tuple[int | str, ...]
+    dtype: str
+
+
+@dataclass(frozen=True)
+class ConversionMetadata:
+    """Standardized metadata and validated contract for PyTorch to ONNX conversion.
+
+    Attributes:
+        model_name: Base name of the exported model class.
+        inputs: Tuple of input tensor specifications.
+        outputs: Tuple of output tensor specifications.
+        dynamic_batch: Whether axis 0 is designated as a dynamic batch dimension.
+        dynamic_axes: Mapping of tensor names to dynamic axis dictionaries passed to
+            the ONNX exporter.
+        opset_version: Targeted ONNX opset version.
+    """
+
+    model_name: str
+    inputs: tuple[TensorSpec, ...]
+    outputs: tuple[TensorSpec, ...]
+    dynamic_batch: bool
+    dynamic_axes: dict[str, dict[int, str]]
+    opset_version: int
 
 
 def _ensure_torch_available() -> Any:
@@ -64,6 +114,27 @@ def _as_torch_tensor(value: Any) -> Any:
     if isinstance(value, torch.Tensor):
         return value
     return torch.as_tensor(value)
+
+
+def _validate_tensor_dtype(tensor: Any, name: str) -> str:
+    dtype_str = str(tensor.dtype).removeprefix("torch.")
+    if dtype_str not in SUPPORTED_DTYPES:
+        raise TypeError(
+            f"Unsupported dtype '{dtype_str}' for tensor '{name}'. "
+            f"Supported dtypes are: {sorted(SUPPORTED_DTYPES)}"
+        )
+    return dtype_str
+
+
+def _validate_tensor_rank(tensor: Any, name: str) -> int:
+    rank = getattr(tensor, "ndim", len(getattr(tensor, "shape", ())))
+    if rank not in SUPPORTED_RANKS:
+        raise ValueError(
+            f"Unsupported rank {rank} for tensor '{name}' with shape "
+            f"{tuple(getattr(tensor, 'shape', ()))}. "
+            f"Supported ranks are 1D, 2D, 3D, and 4D."
+        )
+    return rank
 
 
 def _model_input_names(
@@ -115,6 +186,137 @@ def _resolve_export_path(
     return base_dir / f"{model_name}.onnx"
 
 
+def build_conversion_contract(
+    model: Any,
+    sample_inputs: Any,
+    *,
+    dynamic_batch: bool = True,
+    opset_version: int = 17,
+    input_names: Sequence[str] | None = None,
+    output_names: Sequence[str] | None = None,
+) -> ConversionMetadata:
+    """Validate and build standardized conversion metadata for a PyTorch model.
+
+    Evaluates the model with the given sample inputs to extract and validate input
+    and output tensor specifications (ranks, dtypes, shapes, dynamic axes), verifying
+    the compatibility matrix and failure semantics prior to ONNX graph export.
+
+    Args:
+        model: PyTorch model instance (`torch.nn.Module`).
+        sample_inputs: Single tensor, tuple/list of tensors, or dict mapping names
+            to tensors.
+        dynamic_batch: Whether to assign a dynamic `batch_size` axis at dimension 0.
+        opset_version: Targeted ONNX opset version.
+        input_names: Optional sequence of names overriding input tensor names.
+        output_names: Optional sequence of names overriding output tensor names.
+
+    Returns:
+        A frozen `ConversionMetadata` instance containing verified input and output
+        tensor specifications, dynamic axes, and model metadata.
+
+    Raises:
+        TypeError: If `model` is not an instance of `torch.nn.Module`, or if any
+            input/output tensor has an unsupported dtype.
+        ValueError: If `sample_inputs` is empty, tensor ranks are not in {1, 2, 3, 4},
+            or name counts do not match input/output counts.
+        ModuleNotFoundError: If `torch` is unavailable.
+    """
+
+    torch = _ensure_torch_available()
+    if not isinstance(model, torch.nn.Module):
+        raise TypeError("model must be an instance of torch.nn.Module")
+
+    sample_inputs_norm = _normalize_inputs(sample_inputs)
+    if isinstance(sample_inputs_norm, Mapping):
+        model_inputs = tuple(
+            _as_torch_tensor(v).contiguous() for v in sample_inputs_norm.values()
+        )
+        resolved_input_names = tuple(str(k) for k in sample_inputs_norm)
+    else:
+        model_inputs = tuple(
+            _as_torch_tensor(v).contiguous() for v in sample_inputs_norm
+        )
+        resolved_input_names = (
+            tuple(str(name) for name in input_names)
+            if input_names is not None
+            else _model_input_names(sample_inputs)
+        )
+
+    if input_names is not None and len(input_names) != len(model_inputs):
+        raise ValueError(
+            "input_names must match the number of input tensors; "
+            f"got {len(input_names)} names for {len(model_inputs)} inputs"
+        )
+
+    if not model_inputs:
+        raise ValueError("At least one sample input tensor is required for export.")
+
+    input_specs: list[TensorSpec] = []
+    dynamic_axes: dict[str, dict[int, str]] = {}
+    for name, tensor in zip(resolved_input_names, model_inputs, strict=True):
+        dtype_str = _validate_tensor_dtype(tensor, name)
+        rank = _validate_tensor_rank(tensor, name)
+        shape: tuple[int | str, ...] = (
+            (-1, *tuple(tensor.shape)[1:])
+            if dynamic_batch and rank > 0
+            else tuple(tensor.shape)
+        )
+        input_specs.append(TensorSpec(name=name, shape=shape, dtype=dtype_str))
+        dynamic_axes[name] = {0: "batch_size"} if dynamic_batch else {}
+
+    with torch.no_grad():
+        if isinstance(sample_inputs_norm, Mapping):
+            named_kwargs = {
+                name: tensor
+                for name, tensor in zip(resolved_input_names, model_inputs, strict=True)
+            }
+            raw_outputs = model(**named_kwargs)
+        else:
+            raw_outputs = model(*model_inputs)
+
+    output_tensors = _normalize_expected_outputs(raw_outputs)
+    if not output_tensors:
+        raise ValueError("Model execution produced no outputs.")
+
+    if output_names is not None:
+        if len(output_names) != len(output_tensors):
+            raise ValueError(
+                "output_names must match the number of model outputs; "
+                f"got {len(output_names)} names for {len(output_tensors)} outputs"
+            )
+        resolved_output_names = tuple(str(name) for name in output_names)
+    elif isinstance(raw_outputs, Mapping):
+        resolved_output_names = tuple(str(k) for k in raw_outputs)
+    else:
+        resolved_output_names = tuple(
+            f"output_{idx}" if len(output_tensors) > 1 else "output"
+            for idx in range(len(output_tensors))
+        )
+
+    output_specs: list[TensorSpec] = []
+    for name, out_tensor in zip(resolved_output_names, output_tensors, strict=True):
+        if not isinstance(out_tensor, torch.Tensor):
+            out_tensor = torch.as_tensor(out_tensor)
+        dtype_str = _validate_tensor_dtype(out_tensor, name)
+        rank = _validate_tensor_rank(out_tensor, name)
+        out_shape: tuple[int | str, ...] = (
+            (-1, *tuple(out_tensor.shape)[1:])
+            if dynamic_batch and rank > 0
+            else tuple(out_tensor.shape)
+        )
+        output_specs.append(TensorSpec(name=name, shape=out_shape, dtype=dtype_str))
+        dynamic_axes.setdefault(name, {0: "batch_size"} if dynamic_batch else {})
+
+    return ConversionMetadata(
+        model_name=model.__class__.__name__,
+        inputs=tuple(input_specs),
+        outputs=tuple(output_specs),
+        dynamic_batch=dynamic_batch,
+        dynamic_axes=dynamic_axes,
+        opset_version=opset_version,
+    )
+
+
 def export_torch_model_to_onnx(
     model: Any,
     sample_inputs: Any,
@@ -137,6 +339,8 @@ def export_torch_model_to_onnx(
             of input names to tensor values. This input is used as the export-time
             sample for static/dynamic shape generation.
         output_path: Destination path. The `.onnx` suffix is added if needed.
+        cache_dir: Directory used when output_path is omitted.
+        force_export: Overwrite existing cached ONNX file if True.
         dynamic_batch: Whether to mark axis 0 of each input and output with the
             symbolic dimension `batch_size`.
         opset_version: ONNX opset version passed to `torch.onnx.export`.
@@ -153,34 +357,34 @@ def export_torch_model_to_onnx(
         The path to the generated ONNX model.
 
     Raises:
-        TypeError: If `model` is not a PyTorch `nn.Module`.
-        ValueError: If the sample inputs or export naming contract is invalid.
+        TypeError: If `model` is not a PyTorch `nn.Module` or uses unsupported dtypes.
+        ValueError: If sample inputs, tensor ranks, or export naming contracts are invalid.
         ModuleNotFoundError: If PyTorch is unavailable, or if validation is
             requested and ONNX is unavailable.
     """
 
     torch = _ensure_torch_available()
-    if not isinstance(model, torch.nn.Module):
-        raise TypeError("model must be an instance of torch.nn.Module")
+    contract = build_conversion_contract(
+        model,
+        sample_inputs,
+        dynamic_batch=dynamic_batch,
+        opset_version=opset_version,
+        input_names=input_names,
+        output_names=output_names,
+    )
 
     sample_inputs_norm = _normalize_inputs(sample_inputs)
     if isinstance(sample_inputs_norm, Mapping):
-        model_inputs = tuple(_as_torch_tensor(v) for v in sample_inputs_norm.values())
-        resolved_input_names = tuple(str(k) for k in sample_inputs_norm)
+        model_inputs = tuple(
+            _as_torch_tensor(v).contiguous() for v in sample_inputs_norm.values()
+        )
     else:
-        model_inputs = tuple(_as_torch_tensor(v) for v in sample_inputs_norm)
-        resolved_input_names = input_names or _model_input_names(sample_inputs)
+        model_inputs = tuple(
+            _as_torch_tensor(v).contiguous() for v in sample_inputs_norm
+        )
 
-    if input_names is not None:
-        if len(input_names) != len(model_inputs):
-            raise ValueError(
-                "input_names must match the number of input tensors; "
-                f"got {len(input_names)} names for {len(model_inputs)} inputs"
-            )
-        resolved_input_names = tuple(str(name) for name in input_names)
-
-    if not model_inputs:
-        raise ValueError("At least one sample input tensor is required for export.")
+    resolved_input_names = [spec.name for spec in contract.inputs]
+    output_names_list = [spec.name for spec in contract.outputs]
 
     output_file = _resolve_export_path(
         output_path,
@@ -194,29 +398,13 @@ def export_torch_model_to_onnx(
         if not validate:
             return output_file
         validate_onnx_export(
-            output_file, model, sample_inputs, dynamic_batch=dynamic_batch
+            output_file,
+            model,
+            sample_inputs,
+            dynamic_batch=dynamic_batch,
+            contract=contract,
         )
         return output_file
-
-    dynamic_axes: dict[str, dict[int, str]] = {}
-    for name in resolved_input_names:
-        dynamic_axes[name] = {0: "batch_size"} if dynamic_batch else {}
-
-    expected_output_count = _infer_model_output_count(model, model_inputs)
-    if output_names is None:
-        output_names_tuple = tuple(
-            str(f"output_{idx}") if expected_output_count > 1 else "output"
-            for idx in range(expected_output_count)
-        )
-    else:
-        output_names_tuple = tuple(str(name) for name in output_names)
-        if len(output_names_tuple) != expected_output_count:
-            raise ValueError(
-                "output_names must match the number of model outputs; "
-                f"got {len(output_names_tuple)} names for {expected_output_count} outputs"
-            )
-    for name in output_names_tuple:
-        dynamic_axes.setdefault(name, {0: "batch_size"} if dynamic_batch else {})
 
     with torch.no_grad():
         export_training_mode = training
@@ -233,9 +421,9 @@ def export_torch_model_to_onnx(
             export_params=True,
             opset_version=opset_version,
             do_constant_folding=True,
-            input_names=list(resolved_input_names),
-            output_names=list(output_names_tuple),
-            dynamic_axes=dynamic_axes,
+            input_names=resolved_input_names,
+            output_names=output_names_list,
+            dynamic_axes=contract.dynamic_axes,
             dynamic_shapes=None,
             training=export_training_mode,
             dynamo=False,
@@ -244,7 +432,11 @@ def export_torch_model_to_onnx(
 
     if validate:
         validate_onnx_export(
-            output_file, model, sample_inputs, dynamic_batch=dynamic_batch
+            output_file,
+            model,
+            sample_inputs,
+            dynamic_batch=dynamic_batch,
+            contract=contract,
         )
 
     return output_file
@@ -273,6 +465,7 @@ def validate_onnx_export(
     dynamic_batch: bool = True,
     rtol: float = 1e-5,
     atol: float = 1e-5,
+    contract: ConversionMetadata | None = None,
 ) -> dict[str, Any]:
     """Validate an ONNX export against a PyTorch reference model.
 
@@ -288,6 +481,7 @@ def validate_onnx_export(
             dimension. The returned value also reflects the model metadata.
         rtol: Relative tolerance used for numerical output comparison.
         atol: Absolute tolerance used for numerical output comparison.
+        contract: Optional precomputed `ConversionMetadata` instance.
 
     Returns:
         A dictionary with the model path, dynamic batch status, input and output
@@ -312,17 +506,22 @@ def validate_onnx_export(
     sample_inputs_norm = _normalize_inputs(sample_inputs)
     if isinstance(sample_inputs_norm, Mapping):
         named_inputs = {
-            str(k): _as_torch_tensor(v) for k, v in sample_inputs_norm.items()
+            str(k): _as_torch_tensor(v).contiguous()
+            for k, v in sample_inputs_norm.items()
         }
-        expected = model(**named_inputs)
-        runtime_inputs = {k: v.detach().cpu().numpy() for k, v in named_inputs.items()}
+        with torch.no_grad():
+            expected = model(**named_inputs)
+        runtime_inputs: Any = {
+            k: v.detach().cpu().numpy() for k, v in named_inputs.items()
+        }
     else:
-        model_inputs = tuple(_as_torch_tensor(v) for v in sample_inputs_norm)
-        expected = model(*model_inputs)
-        runtime_inputs = {
-            f"input_{idx}": value.detach().cpu().numpy()
-            for idx, value in enumerate(model_inputs)
-        }
+        model_inputs = tuple(
+            _as_torch_tensor(v).contiguous() for v in sample_inputs_norm
+        )
+        with torch.no_grad():
+            expected = model(*model_inputs)
+        # Use a list of positional ndarrays so input_names customization does not cause mismatch
+        runtime_inputs = [value.detach().cpu().numpy() for value in model_inputs]
 
     session = InferenceSession(
         str(model_path),
@@ -342,6 +541,8 @@ def validate_onnx_export(
         )
 
     for actual, expected_tensor in zip(actual_outputs, expected_outputs, strict=True):
+        if not isinstance(expected_tensor, torch.Tensor):
+            expected_tensor = torch.as_tensor(expected_tensor)
         expected_array = expected_tensor.detach().cpu().numpy()
         if actual.shape != expected_array.shape:
             raise ValueError(
@@ -387,6 +588,10 @@ def load_onnx_session_from_torch(
     dynamic_batch: bool = True,
     session_config: SessionConfig | None = None,
     validate: bool = True,
+    opset_version: int = 17,
+    input_names: Sequence[str] | None = None,
+    output_names: Sequence[str] | None = None,
+    **kwargs: Any,
 ) -> InferenceSession:
     """Export a PyTorch module to ONNX and load it as a Pyreth session.
 
@@ -395,11 +600,17 @@ def load_onnx_session_from_torch(
         sample_inputs: Sample inputs used for export and optional validation.
         output_path: Destination for the ONNX file. If omitted, a filename based on
             the model class is created in the current working directory.
+        cache_dir: Directory used when output_path is omitted.
+        force_export: Overwrite existing cached ONNX file if True.
         dynamic_batch: Whether to export a dynamic batch dimension.
         session_config: Configuration for the returned inference session. If
             omitted, a single-threaded CPU session is used.
         validate: Whether to validate the exported model before creating the
             session.
+        opset_version: ONNX opset version passed to the exporter.
+        input_names: Optional sequence of input names.
+        output_names: Optional sequence of output names.
+        **kwargs: Additional parameters passed to `export_torch_model_to_onnx`.
 
     Returns:
         An inference session that loads the exported ONNX model.
@@ -418,7 +629,11 @@ def load_onnx_session_from_torch(
         cache_dir=cache_dir,
         force_export=force_export,
         dynamic_batch=dynamic_batch,
+        opset_version=opset_version,
+        input_names=input_names,
+        output_names=output_names,
         validate=validate,
+        **kwargs,
     )
     if session_config is None:
         session_config = SessionConfig(
