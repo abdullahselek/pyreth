@@ -96,7 +96,89 @@ Pyreth validates invariants upfront and raises explicit exceptions:
 
 ---
 
-## 4. End-to-End Export & Direct Session Loading
+## 4. Export Utilities & Deterministic Graph Generation
+
+`pyreth.export_torch_model_to_onnx` provides a deterministic export pipeline:
+- **Evaluation Mode Safety**: Temporarily switches the model to `eval()` mode and restores previous training state on completion.
+- **Deterministic Flags**: Sets `do_constant_folding=True`, `export_params=True`, and optional random seeds (`seed=...`).
+- **Atomic File Writing**: Exports to a temporary staging file (`.tmp.onnx`) and performs an atomic replace into the destination path, preventing corrupted artifacts upon interrupted processes.
+- **Custom Dynamic Axes**: `make_dynamic_axes(...)` or `dynamic_axes={...}` can be supplied to specify arbitrary dynamic dimensions (such as `sequence_length` in transformers) while keeping dynamic batch enabled on axis 0.
+
+```python
+from pyreth import export_torch_model_to_onnx, make_dynamic_axes
+
+# Build dynamic axes for an NLP model with dynamic batch and dynamic sequence length
+dynamic_axes = make_dynamic_axes(
+    input_names=["input_ids", "attention_mask"],
+    output_names=["logits"],
+    additional_axes={"input_ids": {1: "sequence_length"}, "attention_mask": {1: "sequence_length"}},
+)
+
+model_path = export_torch_model_to_onnx(
+    model,
+    (input_ids, attention_mask),
+    "nlp_model.onnx",
+    dynamic_axes=dynamic_axes,
+    seed=42,
+    validate=True,
+)
+```
+
+---
+
+## 5. Verification Helpers: Graph Integrity & Numerical Equivalence
+
+Pyreth provides standalone diagnostic helpers to inspect exported models independently:
+
+### `check_onnx_graph`
+Validates graph protobuf integrity, imports, and shape inference:
+```python
+import pyreth
+
+graph_info = pyreth.check_onnx_graph("nlp_model.onnx")
+print(graph_info["opset_version"])  # 17
+print(graph_info["input_names"])    # ['input_ids', 'attention_mask']
+print(graph_info["output_names"])   # ['logits']
+```
+
+### `check_numerical_equivalence`
+Executes sample inputs through both PyTorch reference and Pyreth `InferenceSession`, reporting maximum/mean absolute and relative discrepancies:
+```python
+metrics = pyreth.check_numerical_equivalence(
+    model,
+    "nlp_model.onnx",
+    (input_ids, attention_mask),
+    rtol=1e-5,
+    atol=1e-5,
+)
+print("Max absolute error:", metrics["max_abs_diff"])
+print("Mean absolute error:", metrics["mean_abs_diff"])
+print("Max relative error:", metrics["max_rel_diff"])
+```
+
+---
+
+## 6. Model Cache Management
+
+Pyreth provides cache resolution utilities consistent with the benchmark suite:
+
+```python
+import pyreth
+
+# Resolves default cache directory ($PYRETH_CACHE_DIR or benchmarks/.onnx_cache)
+cache_dir = pyreth.get_default_cache_dir()
+
+# Sanitize model identifiers into valid cache filenames
+path = pyreth.resolve_cache_path("google/mobilenet_v2_1.0_224", prefix="image_cls__")
+print(path)  # .../benchmarks/.onnx_cache/image_cls__google__mobilenet_v2_1.0_224.onnx
+
+# Clear cached model files
+pyreth.clear_cache(pattern="image_cls__*.onnx")
+```
+
+---
+
+## 7. End-to-End Export & Direct Session Loading
 
 Export a model to an ONNX file or load it directly into a Pyreth zero-copy `InferenceSession`:
 

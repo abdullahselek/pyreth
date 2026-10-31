@@ -20,7 +20,13 @@ from pyreth import (
     SessionConfig,
     TensorSpec,
     build_conversion_contract,
+    check_numerical_equivalence,
+    check_onnx_graph,
+    clear_cache,
     export_torch_model_to_onnx,
+    get_default_cache_dir,
+    make_dynamic_axes,
+    resolve_cache_path,
 )
 
 
@@ -412,3 +418,100 @@ def test_export_with_custom_positional_input_names(
     session = InferenceSession(str(exported))
     assert [info.name for info in session.model_info.inputs] == ["op_a", "op_b"]
     assert [info.name for info in session.model_info.outputs] == ["res_sum", "res_prod"]
+
+
+def test_make_dynamic_axes_builder():
+    """Validates dynamic axes construction with custom batch dimension and extra axes."""
+    axes = make_dynamic_axes(
+        input_names=["input_ids", "attention_mask"],
+        output_names=["logits"],
+        batch_axis=0,
+        batch_dim_name="batch_size",
+        additional_axes={
+            "input_ids": {1: "sequence_length"},
+            "attention_mask": {1: "sequence_length"},
+        },
+    )
+    assert axes["input_ids"] == {0: "batch_size", 1: "sequence_length"}
+    assert axes["attention_mask"] == {0: "batch_size", 1: "sequence_length"}
+    assert axes["logits"] == {0: "batch_size"}
+
+
+def test_cache_management_and_path_resolution(tmp_path: Path):
+    """Verifies default cache directory, sanitized path resolution, and cache clearing."""
+    default_dir = get_default_cache_dir()
+    assert isinstance(default_dir, Path)
+    assert default_dir.exists()
+
+    hf_path = resolve_cache_path(
+        "google/mobilenet_v2-1.0", cache_dir=tmp_path, prefix="image_cls__"
+    )
+    assert hf_path == tmp_path / "image_cls__google__mobilenet_v2_1.0.onnx"
+
+    # Create dummy onnx cache files and clear
+    (tmp_path / "dummy1.onnx").write_bytes(b"dummy")
+    (tmp_path / "dummy2.onnx").write_bytes(b"dummy")
+    (tmp_path / "other.txt").write_text("keep")
+
+    removed = clear_cache(tmp_path)
+    assert removed == 2
+    assert not (tmp_path / "dummy1.onnx").exists()
+    assert not (tmp_path / "dummy2.onnx").exists()
+    assert (tmp_path / "other.txt").exists()
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_check_onnx_graph_integrity(tmp_path: Path, tiny_mlp):
+    """Validates check_onnx_graph helper returns valid schema and detects errors."""
+    model, x = tiny_mlp
+    out_path = tmp_path / "graph_check.onnx"
+    export_torch_model_to_onnx(model, x, out_path, validate=False)
+
+    info = check_onnx_graph(out_path)
+    assert info["model_path"] == str(out_path)
+    assert info["opset_version"] == 17
+    assert len(info["input_names"]) == 1
+    assert len(info["output_names"]) == 1
+
+    with pytest.raises(FileNotFoundError):
+        check_onnx_graph(tmp_path / "non_existent.onnx")
+
+    corrupt_file = tmp_path / "corrupt.onnx"
+    corrupt_file.write_bytes(b"invalid protobuf contents")
+    with pytest.raises(ValueError, match="Failed to load ONNX model"):
+        check_onnx_graph(corrupt_file)
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_check_numerical_equivalence_metrics(tmp_path: Path, tiny_mlp):
+    """Checks detailed numerical metrics and failure when outputs diverge."""
+    model, x = tiny_mlp
+    out_path = tmp_path / "numerics.onnx"
+    export_torch_model_to_onnx(model, x, out_path, validate=False)
+
+    metrics = check_numerical_equivalence(model, out_path, x, rtol=1e-5, atol=1e-5)
+    assert metrics["matches"] is True
+    assert metrics["max_abs_diff"] < 1e-4
+    assert metrics["max_rel_diff"] < 1e-4
+    assert "mean_abs_diff" in metrics
+
+    # Failure with diverging reference model
+    diff_model = torch.nn.Linear(4, 3).eval()
+    diff_model.bias.data.fill_(100.0)
+    with pytest.raises(
+        ValueError, match="does not match exported ONNX model within tolerance"
+    ):
+        check_numerical_equivalence(diff_model, out_path, x, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_export_preserves_training_state_and_seed(tmp_path: Path, tiny_mlp):
+    """Verifies that export restores model.training state and respects seed."""
+    model, x = tiny_mlp
+    model.train()  # Explicitly set training mode
+    out_path = tmp_path / "deterministic.onnx"
+
+    export_torch_model_to_onnx(model, x, out_path, seed=42, validate=True)
+    assert model.training is True  # Preserved after export
+    assert out_path.exists()
+    assert not out_path.with_suffix(".tmp.onnx").exists()  # Cleaned up
