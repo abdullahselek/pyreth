@@ -13,17 +13,21 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     onnx = None
 
+import pyreth
 from pyreth import (
     ConversionMetadata,
+    DataType,
     ExecutionProvider,
     InferenceSession,
     SessionConfig,
+    Tensor,
     TensorSpec,
     build_conversion_contract,
     check_numerical_equivalence,
     check_onnx_graph,
     clear_cache,
     export_torch_model_to_onnx,
+    from_torch,
     get_default_cache_dir,
     make_dynamic_axes,
     resolve_cache_path,
@@ -515,3 +519,95 @@ def test_export_preserves_training_state_and_seed(tmp_path: Path, tiny_mlp):
     assert model.training is True  # Preserved after export
     assert out_path.exists()
     assert not out_path.with_suffix(".tmp.onnx").exists()  # Cleaned up
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_inference_session_from_torch_custom_config_and_cache(tmp_path: Path, tiny_mlp):
+    """Verifies from_torch creates a session with custom SessionConfig and cache directory."""
+    model, sample = tiny_mlp
+    config = SessionConfig(
+        intra_op_num_threads=2,
+        inter_op_num_threads=1,
+        providers=[ExecutionProvider.CPU],
+    )
+    session = InferenceSession.from_torch(
+        model,
+        sample,
+        cache_dir=tmp_path,
+        session_config=config,
+        force_export=True,
+        validate=True,
+    )
+    assert session.is_valid
+    assert session.config.intra_op_num_threads == 2
+    assert session.model_info.has_dynamic_batch
+    assert Path(session.model_path).parent == tmp_path
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_pyreth_from_torch_top_level_and_dynamic_axes(tmp_path: Path, tiny_mlp):
+    """Verifies pyreth.from_torch top-level helper works with custom input/output names."""
+    model, sample = tiny_mlp
+    out_path = tmp_path / "custom_named.onnx"
+    session = from_torch(
+        model,
+        sample,
+        output_path=out_path,
+        input_names=["feature_vector"],
+        output_names=["predictions"],
+        dynamic_batch=True,
+        validate=True,
+    )
+    assert session.is_valid
+    assert session.input_names == ["feature_vector"]
+    assert session.output_names == ["predictions"]
+    assert out_path.exists()
+
+
+@pytest.mark.skipif(torch is None, reason="torch is required")
+def test_pyreth_tensor_from_and_to_torch_bridge():
+    """Validates Tensor.from_torch and Tensor.to_torch round-trip conversion and memory sharing."""
+    torch_arr = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=torch.float32)
+    pyreth_t = Tensor.from_torch(torch_arr)
+    assert pyreth_t.shape == (2, 3)
+    assert pyreth_t.dtype == DataType.Float32
+
+    # In-place memory modification check
+    torch_arr[0, 0] = 99.0
+    assert pyreth_t.to_numpy()[0, 0] == 99.0
+
+    # Convert back to torch
+    recovered_torch = pyreth_t.to_torch()
+    assert isinstance(recovered_torch, torch.Tensor)
+    assert recovered_torch.shape == (2, 3)
+    assert recovered_torch[0, 0] == 99.0
+
+    # Type validation
+    with pytest.raises(TypeError, match="Expected torch.Tensor"):
+        Tensor.from_torch([1.0, 2.0, 3.0])  # type: ignore[arg-type]
+
+
+@pytest.mark.skipif(torch is None or onnx is None, reason="torch/onnx are required")
+def test_inference_session_run_with_torch_tensors(tmp_path: Path, tiny_mlp):
+    """Validates running InferenceSession with raw PyTorch tensor inputs and outputs."""
+    model, sample = tiny_mlp
+    session = pyreth.from_torch(
+        model,
+        sample,
+        output_path=tmp_path / "torch_io.onnx",
+        dynamic_batch=True,
+    )
+
+    # Pass torch.Tensor directly (using __dlpack__ coercion)
+    test_input = torch.randn(4, 4, dtype=torch.float32)
+    expected = model(test_input).detach().numpy()
+
+    # Via positional list
+    results = session.run([test_input])
+    assert len(results) == 1
+    np.testing.assert_allclose(results[0].to_numpy(), expected, rtol=1e-5, atol=1e-5)
+
+    # Convert output Tensor to PyTorch tensor
+    torch_out = results[0].to_torch()
+    assert isinstance(torch_out, torch.Tensor)
+    np.testing.assert_allclose(torch_out.numpy(), expected, rtol=1e-5, atol=1e-5)
