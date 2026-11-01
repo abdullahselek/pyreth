@@ -25,20 +25,22 @@ Pyreth enforces an explicit conversion contract prior to invoking the ONNX expor
 ```python
 from dataclasses import dataclass
 
+
 @dataclass(frozen=True)
 class TensorSpec:
-    name: str                       # ONNX graph input/output identifier
-    shape: tuple[int | str, ...]    # Standardized shape (-1 for dynamic batch)
-    dtype: str                      # String representation ('float32', 'int64', etc.)
+    name: str  # ONNX graph input/output identifier
+    shape: tuple[int | str, ...]  # Standardized shape (-1 for dynamic batch)
+    dtype: str  # String representation ('float32', 'int64', etc.)
+
 
 @dataclass(frozen=True)
 class ConversionMetadata:
-    model_name: str                 # Base class name of the PyTorch module
+    model_name: str  # Base class name of the PyTorch module
     inputs: tuple[TensorSpec, ...]  # Input tensor specifications
-    outputs: tuple[TensorSpec, ...] # Output tensor specifications
-    dynamic_batch: bool             # Whether axis 0 is dynamic
-    dynamic_axes: dict[str, dict[int, str]] # ONNX exporter dynamic axis map
-    opset_version: int              # Targeted ONNX opset version
+    outputs: tuple[TensorSpec, ...]  # Output tensor specifications
+    dynamic_batch: bool  # Whether axis 0 is dynamic
+    dynamic_axes: dict[str, dict[int, str]]  # ONNX exporter dynamic axis map
+    opset_version: int  # Targeted ONNX opset version
 ```
 
 ### Inspecting Models with `build_conversion_contract`
@@ -48,6 +50,7 @@ class ConversionMetadata:
 ```python
 import torch
 import pyreth
+
 
 class VisionClassifier(torch.nn.Module):
     def __init__(self):
@@ -61,6 +64,7 @@ class VisionClassifier(torch.nn.Module):
         h = self.pool(h).flatten(1)
         return {"logits": self.fc(h)}
 
+
 model = VisionClassifier().eval()
 sample = torch.randn(2, 3, 32, 32, dtype=torch.float32)
 
@@ -72,7 +76,9 @@ contract = pyreth.build_conversion_contract(
     input_names=["image"],
 )
 
-print(contract.inputs[0])   # TensorSpec(name='image', shape=(-1, 3, 32, 32), dtype='float32')
+print(
+    contract.inputs[0]
+)  # TensorSpec(name='image', shape=(-1, 3, 32, 32), dtype='float32')
 print(contract.outputs[0])  # TensorSpec(name='logits', shape=(-1, 10), dtype='float32')
 ```
 
@@ -111,7 +117,10 @@ from pyreth import export_torch_model_to_onnx, make_dynamic_axes
 dynamic_axes = make_dynamic_axes(
     input_names=["input_ids", "attention_mask"],
     output_names=["logits"],
-    additional_axes={"input_ids": {1: "sequence_length"}, "attention_mask": {1: "sequence_length"}},
+    additional_axes={
+        "input_ids": {1: "sequence_length"},
+        "attention_mask": {1: "sequence_length"},
+    },
 )
 
 model_path = export_torch_model_to_onnx(
@@ -137,8 +146,8 @@ import pyreth
 
 graph_info = pyreth.check_onnx_graph("nlp_model.onnx")
 print(graph_info["opset_version"])  # 17
-print(graph_info["input_names"])    # ['input_ids', 'attention_mask']
-print(graph_info["output_names"])   # ['logits']
+print(graph_info["input_names"])  # ['input_ids', 'attention_mask']
+print(graph_info["output_names"])  # ['logits']
 ```
 
 ### `check_numerical_equivalence`
@@ -194,6 +203,7 @@ session = pyreth.InferenceSession.from_torch(
 
 # Run zero-copy inference with dynamic batch size
 import numpy as np
+
 batch_images = np.random.randn(8, 3, 32, 32).astype(np.float32)
 outputs = session.run_numpy([batch_images])
 print("Logits shape:", outputs[0].shape)  # (8, 10)

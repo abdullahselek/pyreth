@@ -39,8 +39,8 @@ jobs:
       - name: Check Python formatting & linting (ruff)
         run: |
           uv sync --python 3.14
-          uv run ruff check python/ tests/
-          uv run ruff format --check python/ tests/
+          uv run ruff check .
+          uv run ruff format --check .
 
   test:
     name: Build & test (${{ matrix.os }})

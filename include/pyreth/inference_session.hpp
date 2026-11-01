@@ -296,6 +296,13 @@ public:
   [[nodiscard]] Status validateInputs(std::span<const Tensor> inputs) const noexcept;
 
   /**
+   * @brief Convenience overload for initializer-list input validation.
+   */
+  [[nodiscard]] Status validateInputs(std::initializer_list<Tensor> inputs) const noexcept {
+    return validateInputs(std::span<const Tensor>(inputs.begin(), inputs.size()));
+  }
+
+  /**
    * @brief Executes synchronous zero-copy inference on positional input tensors.
    *
    * Input `Tensor` storage is pinned for the entire execution duration and wrapped

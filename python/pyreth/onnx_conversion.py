@@ -562,9 +562,7 @@ def export_torch_model_to_onnx(
                     else torch.onnx.TrainingMode.EVAL
                 )
             with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", category=DeprecationWarning, module="torch.onnx"
-                )
+                warnings.filterwarnings("ignore", category=DeprecationWarning)
                 torch.onnx.export(
                     model,
                     model_inputs,
