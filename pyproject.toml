@@ -64,6 +64,7 @@ cmake.define = { BUILD_TESTING = "OFF", BUILD_BENCHMARKS = "OFF" }
 build = ["cp313-*", "cp314-*"]
 skip = ["*-musllinux*", "*-win32", "*-manylinux_i686"]
 test-requires = ["pytest", "numpy"]
+test-extras = ["onnx-conversion"]
 test-command = "pytest {project}/tests/python"
 
 [tool.cibuildwheel.linux]

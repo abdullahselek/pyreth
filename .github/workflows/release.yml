@@ -25,6 +25,8 @@ jobs:
 
       - name: Build and test wheels via cibuildwheel
         uses: pypa/cibuildwheel@v2.23.2
+        env:
+          CIBW_TEST_EXTRAS: onnx-conversion
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v7
@@ -73,16 +75,18 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
 
   github-release:
-    needs: [build_wheels, build_sdist]
+    name: Create GitHub Release
+    needs: [build_wheels, build_sdist, publish]
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
-      - name: Download distributions
-        uses: actions/download-artifact@v4
+      - name: Download all built wheels and sdist
+        uses: actions/download-artifact@v7
         with:
-          name: distributions
-          path: dist/
+          path: dist
+          merge-multiple: true
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:

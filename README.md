@@ -63,6 +63,7 @@
 | **Lock-Free Concurrency** | Bounded Chase-Lev [`WorkStealingQueue`](docs/parallelism.md), 3-state semaphore [`WorkerParker`](docs/parallelism.md), and [`ThreadPool`](docs/parallelism.md) | **4.52 ns** LIFO push/pop (**221M ops/s**); **288M ops/s** on 256-task bursts |
 | **Zero-Copy Tensor & NumPy Bridge** | [`pyreth::Tensor`](docs/tensor.md) with `OWNED`, `ARENA`, `POOLED`, and `EXTERNAL` storage; bidirectional zero-copy [`nanobind::ndarray`](docs/python_api.md) bridge | **36.8 ns** zero-copy buffer wrap; **0 byte copies** across Python <-> C++ <-> ORT |
 | **Inference & Dynamic Batching** | [`InferenceSession`](docs/inference.md) & [`DynamicBatcher`](docs/dynamic_batching.md) with full Python GIL release (`nb::gil_scoped_release`) | **576k req/s** (`1.67 us` P50) sync; **14.2M samples/s** async; **86.8k req/s** concurrent dynamic batching |
+| **PyTorch to ONNX Bridge** | Zero-copy [`Tensor.from_torch`](docs/pytorch_conversion.md) & [`to_torch`](docs/pytorch_conversion.md), automated graph export contract validation, numerical tolerance check, and SHA-256 caching | **< 40 ns** tensor wrapping; 1-line [`InferenceSession.from_torch`](docs/pytorch_conversion.md) deployment |
 
 Full benchmark methodology and latency/throughput tables across batch sizes 1 to 64 are published in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
 
@@ -101,6 +102,20 @@ Full benchmark methodology and latency/throughput tables across batch sizes 1 to
 
 ### 1. Python Installation (`uv` / `pip`)
 
+#### From PyPI
+
+```sh
+# Basic installation (NumPy + ONNX Runtime C++ engine)
+pip install pyreth
+# or using uv
+uv add pyreth
+
+# With PyTorch to ONNX conversion and zero-copy PyTorch tensor bridging
+pip install "pyreth[onnx-conversion]"
+# or using uv
+uv add "pyreth[onnx-conversion]"
+```
+
 #### Using `uv` (Recommended for Development & Serving)
 
 ```sh
@@ -110,6 +125,9 @@ cd pyreth
 
 # Create the virtual environment, compile the C++20 nanobind extension, and install dependencies
 uv sync
+
+# Install optional PyTorch to ONNX conversion dependencies
+uv sync --extra onnx-conversion
 
 # Verify installation
 uv run python -c "import pyreth; print('Pyreth:', pyreth.__version__, '| ORT:', pyreth.get_runtime_version(), '| Best Provider:', pyreth.get_best_backend())"
@@ -194,6 +212,46 @@ with DynamicBatcher(session, batcher_cfg) as batcher:
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(batcher.run_numpy, samples))
     print(batcher.metrics().to_dict())
+```
+
+### PyTorch to ONNX Conversion & Zero-Copy Inference (`onnx-conversion`)
+
+Install with `pip install "pyreth[onnx-conversion]"` or `uv add "pyreth[onnx-conversion]"`. Pyreth provides 1-line PyTorch model conversion to high-performance ONNX sessions with built-in graph validation, numerical equivalence checking, and cache deduplication:
+
+```python
+import torch
+from pyreth import InferenceSession, Tensor
+
+
+# 1. Define any torch.nn.Module
+class LinearClassifier(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fc = torch.nn.Linear(64, 10)
+
+    def forward(self, x):
+        return self.fc(x)
+
+
+model = LinearClassifier().eval()
+sample = torch.randn(1, 64, dtype=torch.float32)
+
+# 2. Export & load directly into a zero-copy InferenceSession
+session = InferenceSession.from_torch(
+    model,
+    sample,
+    dynamic_batch=True,
+    verify_numerics=True,
+)
+
+# 3. Direct inference with PyTorch tensors
+batch_x = torch.randn(8, 64, dtype=torch.float32)
+outputs = session.run_torch(batch_x)
+print("Output logits shape:", outputs[0].shape)  # torch.Size([8, 10])
+
+# 4. Bidirectional zero-copy tensor bridge between PyTorch and Pyreth
+pyreth_tensor = Tensor.from_torch(batch_x)  # Zero-copy DLPack / buffer view
+torch_tensor = pyreth_tensor.to_torch()  # Zero-copy view back to PyTorch
 ```
 
 ### C++20 Quick Start
@@ -323,6 +381,7 @@ uv run ruff check --fix .
 - [`docs/inference.md`](docs/inference.md) — `Runtime`, `Backend`, `ModelInfo`, `InferenceSession`, and zero-copy ORT execution
 - [`docs/dynamic_batching.md`](docs/dynamic_batching.md) — `DynamicBatcher` latency-bounded request coalescing and demultiplexing
 - [`docs/python_api.md`](docs/python_api.md) — Python `nanobind` API reference, zero-copy NumPy ownership, and GIL release architecture
+- [`docs/pytorch_conversion.md`](docs/pytorch_conversion.md) — PyTorch model conversion pipeline, contract validation, numerical verification, and tensor bridging
 - [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) — Micro-benchmark and end-to-end serving benchmark report
 
 ---
