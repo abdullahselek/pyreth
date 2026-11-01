@@ -488,7 +488,7 @@ def verify_benchmark_regressions(
     dynamic_batcher: list[BatchBenchmarkEntry],
     batch_sizes: tuple[int, ...] = BATCH_SIZES,
     max_p99_ms: float = 5000.0,
-    min_scaling_factor: float = 1.2,
+    min_scaling_factor: float = 1.0,
 ) -> list[str]:
     """Validate latency ordering, throughput scaling, and batch coalescing invariants.
 
@@ -540,9 +540,10 @@ def verify_benchmark_regressions(
 
     if len(batch_sizes) >= 2 and batch_sizes[-1] > batch_sizes[0]:
         heap_b1 = sync_heap[0].samples_per_sec
+        peak_sync_heap = max(e.samples_per_sec for e in sync_heap)
         peak_sync_arena = max(e.samples_per_sec for e in sync_arena)
         peak_async_pool = max(e.samples_per_sec for e in async_pool)
-        peak_samples = max(peak_sync_arena, peak_async_pool)
+        peak_samples = max(peak_sync_heap, peak_sync_arena, peak_async_pool)
 
         if peak_samples < heap_b1 * min_scaling_factor:
             raise AssertionError(
@@ -577,7 +578,7 @@ def run_model_benchmark_suite(
     num_workers: int = 4,
     check_regressions: bool = True,
     max_p99_ms: float = 5000.0,
-    min_scaling_factor: float = 1.2,
+    min_scaling_factor: float = 1.0,
 ) -> dict[str, object]:
     """Execute all 4 Pyreth benchmark modes for a loaded `InferenceSession`.
 

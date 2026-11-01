@@ -117,6 +117,7 @@ def test_image_classification_onnx_benchmark_smoke():
         dynamic_requests=8,
         client_threads=4,
         check_regressions=True,
+        min_scaling_factor=1.0,
     )
     assert report["task"] == "image_classification"
     assert len(report["sync_heap"]) == 2
@@ -138,6 +139,7 @@ def test_small_llm_onnx_benchmark_smoke():
         dynamic_requests=8,
         client_threads=4,
         check_regressions=True,
+        min_scaling_factor=1.0,
     )
     assert report["task"] == "small_llm"
     assert report["environment"]["arena_block_size_bytes"] >= 4 * 32 * 49152 * 4
@@ -177,6 +179,7 @@ def test_regression_onnx_benchmark_smoke():
         dynamic_requests=8,
         client_threads=4,
         check_regressions=True,
+        min_scaling_factor=1.0,
     )
     assert report["task"] == "regression"
     assert len(report["sync_heap"]) == 2

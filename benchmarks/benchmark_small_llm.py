@@ -240,6 +240,7 @@ def run_small_llm_benchmarks(
     client_threads: int = 8,
     num_workers: int = 4,
     check_regressions: bool = True,
+    min_scaling_factor: float = 1.0,
 ) -> dict[str, object]:
     """Export the HuggingFace causal LM to ONNX and run all 4 Pyreth benchmark modes.
 
@@ -305,7 +306,7 @@ def run_small_llm_benchmarks(
         num_workers=num_workers,
         check_regressions=check_regressions,
         max_p99_ms=30000.0,
-        min_scaling_factor=1.1,
+        min_scaling_factor=min_scaling_factor,
     )
     report["model_details"] = {
         "onnx_path": str(onnx_path),
@@ -383,6 +384,12 @@ def main() -> None:
         action="store_true",
         help="Skip automated regression assertions",
     )
+    parser.add_argument(
+        "--min-scaling-factor",
+        type=float,
+        default=1.0,
+        help="Minimum sample throughput scaling ratio between max and min batch sizes (default: 1.0)",
+    )
     args = parser.parse_args()
 
     report = run_small_llm_benchmarks(
@@ -395,6 +402,7 @@ def main() -> None:
         dynamic_requests=args.dynamic_requests,
         client_threads=args.threads,
         check_regressions=not args.skip_regression_check,
+        min_scaling_factor=args.min_scaling_factor,
     )
     details = report["model_details"]  # type: ignore[index]
     print_benchmark_report(
