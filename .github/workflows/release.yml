@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 jobs:
   build_wheels:
@@ -74,7 +73,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
 
   github-release:
-    needs: build
+    needs: [build_wheels, build_sdist]
     runs-on: ubuntu-latest
     permissions:
       contents: write
