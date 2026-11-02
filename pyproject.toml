@@ -31,6 +31,13 @@ onnx-conversion = [
     "onnx>=1.17.0",
     "torch>=2.6.0",
 ]
+benchmarks = [
+    "huggingface-hub>=1.0.0",
+    "onnx>=1.17.0",
+    "onnxscript>=0.2.0",
+    "torch>=2.6.0",
+    "transformers>=4.48.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/abdullahselek/pyreth"

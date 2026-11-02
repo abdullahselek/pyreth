@@ -760,6 +760,13 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+benchmarks = [
+    { name = "huggingface-hub" },
+    { name = "onnx" },
+    { name = "onnxscript" },
+    { name = "torch" },
+    { name = "transformers" },
+]
 onnx-conversion = [
     { name = "onnx" },
     { name = "torch" },
@@ -780,11 +787,16 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "huggingface-hub", marker = "extra == 'benchmarks'", specifier = ">=1.0.0" },
     { name = "numpy", specifier = ">=2.5.4" },
+    { name = "onnx", marker = "extra == 'benchmarks'", specifier = ">=1.17.0" },
     { name = "onnx", marker = "extra == 'onnx-conversion'", specifier = ">=1.17.0" },
+    { name = "onnxscript", marker = "extra == 'benchmarks'", specifier = ">=0.2.0" },
+    { name = "torch", marker = "extra == 'benchmarks'", specifier = ">=2.6.0" },
     { name = "torch", marker = "extra == 'onnx-conversion'", specifier = ">=2.6.0" },
+    { name = "transformers", marker = "extra == 'benchmarks'", specifier = ">=4.48.0" },
 ]
-provides-extras = ["onnx-conversion"]
+provides-extras = ["onnx-conversion", "benchmarks"]
 
 [package.metadata.requires-dev]
 benchmarks = [
