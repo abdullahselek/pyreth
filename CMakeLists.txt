@@ -20,6 +20,55 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ONNX Runtime Integration
 include(cmake/OnnxRuntime.cmake)
 
+# Server Dependencies (JsonCpp & Drogon)
+include(FetchContent)
+
+set(JSONCPP_WITH_TESTS OFF CACHE BOOL "" FORCE)
+set(JSONCPP_WITH_POST_BUILD_UNITTEST OFF CACHE BOOL "" FORCE)
+set(JSONCPP_WITH_PKGCONFIG_SUPPORT OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+  jsoncpp
+  GIT_REPOSITORY https://github.com/open-source-parsers/jsoncpp.git
+  GIT_TAG 1.9.5
+  GIT_SHALLOW TRUE
+  SYSTEM
+)
+
+FetchContent_MakeAvailable(jsoncpp)
+
+if(TARGET jsoncpp_static AND NOT TARGET jsoncpp_lib)
+  add_library(jsoncpp_lib ALIAS jsoncpp_static)
+endif()
+
+# Provide CMake config package for Drogon to find jsoncpp target cleanly
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/cmake/jsoncpp/jsoncppConfig.cmake"
+  "set(jsoncpp_FOUND TRUE)\nset(JSONCPP_INCLUDE_DIRS \"${jsoncpp_SOURCE_DIR}/include\")\n"
+)
+list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_BINARY_DIR}/cmake/jsoncpp")
+
+set(BUILD_CTL OFF CACHE BOOL "Build drogon_ctl" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "Build drogon testing" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libs" FORCE)
+set(BUILD_ORM OFF CACHE BOOL "Build drogon ORM" FORCE)
+set(BUILD_YAML_CONFIG OFF CACHE BOOL "Build yaml config" FORCE)
+set(BUILD_BROTLI OFF CACHE BOOL "Build brotli" FORCE)
+
+FetchContent_Declare(
+  drogon
+  GIT_REPOSITORY https://github.com/drogonframework/drogon.git
+  GIT_TAG v1.9.14
+  GIT_SHALLOW TRUE
+  GIT_SUBMODULES_RECURSE TRUE
+  SYSTEM
+)
+
+FetchContent_MakeAvailable(drogon)
+
+# Re-enable BUILD_TESTING for Pyreth unit tests
+set(BUILD_TESTING ON CACHE BOOL "Build Pyreth unit tests" FORCE)
+
 # Engine Core Target (Static Library)
 # This library contains the core inference logic, thread pool
 # and memory management.
@@ -102,6 +151,64 @@ if(PYRETH_SANITIZER_FLAGS)
       ${PYRETH_SANITIZER_FLAGS}
     )
     target_link_options(EngineCore PUBLIC
+      ${PYRETH_SANITIZER_FLAGS}
+    )
+  endif()
+endif()
+
+# Pyreth Server Target (Static Library)
+add_library(PyrethServer STATIC
+    src/server/http_server.cpp
+)
+
+set_target_properties(PyrethServer PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
+target_include_directories(PyrethServer
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(PyrethServer PUBLIC PYRETH_STATIC_DEFINE)
+
+target_link_libraries(PyrethServer
+    PUBLIC
+        EngineCore
+        drogon
+        jsoncpp_lib
+)
+
+if(MSVC)
+  target_compile_options(PyrethServer PRIVATE
+        /W4
+        /permissive-
+  )
+else()
+  target_compile_options(PyrethServer PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+        -Wshadow
+        -Wconversion
+  )
+endif()
+
+if(PYRETH_SANITIZER_FLAGS)
+  if(MSVC)
+    if(ENABLE_ASAN)
+      target_compile_options(PyrethServer PUBLIC /fsanitize=address /Zi)
+    endif()
+  else()
+    target_compile_options(PyrethServer PUBLIC
+      -fno-omit-frame-pointer
+      -g
+      ${PYRETH_SANITIZER_FLAGS}
+    )
+    target_link_options(PyrethServer PUBLIC
       ${PYRETH_SANITIZER_FLAGS}
     )
   endif()
