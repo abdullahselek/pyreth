@@ -55,6 +55,29 @@ set(BUILD_ORM OFF CACHE BOOL "Build drogon ORM" FORCE)
 set(BUILD_YAML_CONFIG OFF CACHE BOOL "Build yaml config" FORCE)
 set(BUILD_BROTLI OFF CACHE BOOL "Build brotli" FORCE)
 
+# On Linux, Drogon requires UUID (provided by libuuid / uuid-dev).
+# If not present on the host system, fetch a self-contained libuuid via FetchContent.
+if(NOT WIN32 AND NOT APPLE AND NOT CMAKE_SYSTEM_NAME MATCHES "FreeBSD|OpenBSD")
+  find_path(UUID_INCLUDE_DIR NAMES uuid.h PATH_SUFFIXES uuid)
+  find_library(UUID_LIBRARY NAMES uuid)
+  if(NOT UUID_INCLUDE_DIR OR NOT UUID_LIBRARY)
+    FetchContent_Declare(
+      libuuid
+      GIT_REPOSITORY https://github.com/gershnik/libuuid-cmake.git
+      GIT_TAG v2.39.1
+      GIT_SHALLOW TRUE
+      SYSTEM
+    )
+    FetchContent_MakeAvailable(libuuid)
+    get_target_property(LIBUUID_INC uuid::uuid INTERFACE_INCLUDE_DIRECTORIES)
+    set(UUID_INCLUDE_DIR "${LIBUUID_INC}" CACHE PATH "UUID include directory" FORCE)
+    set(UUID_INCLUDE_DIRS "${LIBUUID_INC}" CACHE PATH "UUID include directory" FORCE)
+    set(UUID_LIBRARY "uuid::uuid" CACHE STRING "UUID library" FORCE)
+    set(UUID_LIBRARIES "uuid::uuid" CACHE STRING "UUID library" FORCE)
+    set(UUID_FOUND TRUE CACHE BOOL "UUID found" FORCE)
+  endif()
+endif()
+
 FetchContent_Declare(
   drogon
   GIT_REPOSITORY https://github.com/drogonframework/drogon.git
