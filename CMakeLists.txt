@@ -89,6 +89,18 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(drogon)
 
+# Suppress compiler warnings and deprecation errors from Drogon & Trantor sources (e.g. OpenSSL 4.x deprecations)
+foreach(_tgt IN ITEMS drogon trantor)
+  if(TARGET ${_tgt})
+    if(MSVC)
+      target_compile_options(${_tgt} PRIVATE /w)
+    else()
+      target_compile_options(${_tgt} PRIVATE -w -Wno-error -Wno-deprecated-declarations)
+    endif()
+    target_compile_definitions(${_tgt} PRIVATE OPENSSL_SUPPRESS_DEPRECATED)
+  endif()
+endforeach()
+
 # Re-enable BUILD_TESTING for Pyreth unit tests
 set(BUILD_TESTING ON CACHE BOOL "Build Pyreth unit tests" FORCE)
 

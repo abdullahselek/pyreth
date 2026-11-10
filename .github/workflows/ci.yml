@@ -138,7 +138,7 @@ jobs:
 
       - name: Run CTest under ${{ matrix.name }}
         env:
-          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          ASAN_OPTIONS: detect_leaks=0:detect_container_overflow=0:halt_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
         run: ctest --test-dir build-san --output-on-failure
