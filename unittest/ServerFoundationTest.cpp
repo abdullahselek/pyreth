@@ -1,9 +1,16 @@
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
-#include <gtest/gtest.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#endif
+
+#include <gtest/gtest.h>
 
 #include <cctype>
 #include <chrono>
@@ -20,6 +27,34 @@ using namespace pyreth::server;
 
 namespace {
 
+#ifdef _WIN32
+using socket_t = SOCKET;
+inline int closeSocket(socket_t s) {
+  return ::closesocket(s);
+}
+inline bool isValidSocket(socket_t s) {
+  return s != INVALID_SOCKET;
+}
+
+class WinsockScope {
+public:
+  WinsockScope() {
+    WSADATA wsa_data;
+    ::WSAStartup(MAKEWORD(2, 2), &wsa_data);
+  }
+  ~WinsockScope() { ::WSACleanup(); }
+};
+static WinsockScope g_winsock_scope;
+#else
+using socket_t = int;
+inline int closeSocket(socket_t s) {
+  return ::close(s);
+}
+inline bool isValidSocket(socket_t s) {
+  return s >= 0;
+}
+#endif
+
 struct HttpResponse {
   int status_code{0};
   std::unordered_map<std::string, std::string> headers;
@@ -30,17 +65,25 @@ HttpResponse sendHttpRequest(
     const std::string& host, uint16_t port, const std::string& method, const std::string& path,
     const std::string& body = "",
     const std::vector<std::pair<std::string, std::string>>& extra_headers = {}) {
-  int sock = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (sock < 0) {
+  socket_t sock = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (!isValidSocket(sock)) {
     return {};
   }
 
   // Set timeout of 5 seconds
+#ifdef _WIN32
+  DWORD timeout_ms = 5000;
+  ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms),
+               sizeof(timeout_ms));
+  ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms),
+               sizeof(timeout_ms));
+#else
   struct timeval tv{};
   tv.tv_sec = 5;
   tv.tv_usec = 0;
   ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -49,7 +92,7 @@ HttpResponse sendHttpRequest(
   ::inet_pton(AF_INET, target_ip.c_str(), &addr.sin_addr);
 
   if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ::close(sock);
+    closeSocket(sock);
     return {};
   }
 
@@ -67,12 +110,16 @@ HttpResponse sendHttpRequest(
     req += body;
   }
 
-  ::send(sock, req.data(), req.size(), 0);
+  ::send(sock, req.data(), static_cast<int>(req.size()), 0);
 
   std::string response_str;
   char buf[4096];
   while (true) {
+#ifdef _WIN32
+    int n = ::recv(sock, buf, static_cast<int>(sizeof(buf)), 0);
+#else
     ssize_t n = ::recv(sock, buf, sizeof(buf), 0);
+#endif
     if (n <= 0) {
       break;
     }
@@ -110,7 +157,7 @@ HttpResponse sendHttpRequest(
       }
     }
   }
-  ::close(sock);
+  closeSocket(sock);
 
   HttpResponse resp;
   auto header_end = response_str.find("\r\n\r\n");
@@ -270,15 +317,18 @@ TEST(ServerFoundationTest, ServerLifecycle_RAIIDestruction) {
     EXPECT_GT(assigned_port, 0);
   }
 
+  // Give OS a moment to finish teardown
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
   // After destruction, the port should be unbound; connect should fail
-  int sock = ::socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(sock, 0);
+  socket_t sock = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_TRUE(isValidSocket(sock));
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(assigned_port);
   ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
   int conn_res = ::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-  ::close(sock);
+  closeSocket(sock);
   EXPECT_NE(conn_res, 0);
 }
 

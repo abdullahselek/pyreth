@@ -108,12 +108,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
         include:
-          - name: ASan + UBSan
+          - os: ubuntu-latest
+            name: ASan + UBSan
             build_type: Debug
             cmake_flags: -DENABLE_ASAN=ON -DENABLE_UBSAN=ON -DBUILD_BENCHMARKS=OFF
-          - name: TSan
+          - os: ubuntu-latest
+            name: TSan
+            build_type: RelWithDebInfo
+            cmake_flags: -DENABLE_TSAN=ON -DBUILD_BENCHMARKS=OFF
+          - os: macos-latest
+            name: ASan + UBSan
+            build_type: Debug
+            cmake_flags: -DENABLE_ASAN=ON -DENABLE_UBSAN=ON -DBUILD_BENCHMARKS=OFF
+          - os: macos-latest
+            name: TSan
             build_type: RelWithDebInfo
             cmake_flags: -DENABLE_TSAN=ON -DBUILD_BENCHMARKS=OFF
 

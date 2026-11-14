@@ -78,6 +78,30 @@ if(NOT WIN32 AND NOT APPLE AND NOT CMAKE_SYSTEM_NAME MATCHES "FreeBSD|OpenBSD")
   endif()
 endif()
 
+# On Windows and other systems without system ZLIB, fetch ZLIB via FetchContent.
+find_package(ZLIB QUIET)
+if(NOT ZLIB_FOUND)
+  set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    zlib
+    GIT_REPOSITORY https://github.com/madler/zlib.git
+    GIT_TAG v1.3.1
+    GIT_SHALLOW TRUE
+    SYSTEM
+  )
+  FetchContent_MakeAvailable(zlib)
+  if(TARGET zlibstatic AND NOT TARGET ZLIB::ZLIB)
+    add_library(ZLIB::ZLIB ALIAS zlibstatic)
+  elseif(TARGET zlib AND NOT TARGET ZLIB::ZLIB)
+    add_library(ZLIB::ZLIB ALIAS zlib)
+  endif()
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/cmake/zlib/ZLIBConfig.cmake"
+    "set(ZLIB_FOUND TRUE)\nset(ZLIB_INCLUDE_DIRS \"${zlib_SOURCE_DIR};${zlib_BINARY_DIR}\")\nif(NOT TARGET ZLIB::ZLIB)\n  if(TARGET zlibstatic)\n    add_library(ZLIB::ZLIB ALIAS zlibstatic)\n  elseif(TARGET zlib)\n    add_library(ZLIB::ZLIB ALIAS zlib)\n  endif()\nendif()\n"
+  )
+  list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_BINARY_DIR}/cmake/zlib")
+endif()
+
 FetchContent_Declare(
   drogon
   GIT_REPOSITORY https://github.com/drogonframework/drogon.git
@@ -89,8 +113,8 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(drogon)
 
-# Suppress compiler warnings and deprecation errors from Drogon & Trantor sources (e.g. OpenSSL 4.x deprecations)
-foreach(_tgt IN ITEMS drogon trantor)
+# Suppress compiler warnings and deprecation errors from Drogon, Trantor, and Zlib sources
+foreach(_tgt IN ITEMS drogon trantor zlibstatic)
   if(TARGET ${_tgt})
     if(MSVC)
       target_compile_options(${_tgt} PRIVATE /w)
@@ -216,6 +240,18 @@ target_link_libraries(PyrethServer
         drogon
         jsoncpp_lib
 )
+
+if(WIN32)
+  target_link_libraries(PyrethServer
+    PUBLIC
+        ws2_32
+        rpcrt4
+        crypt32
+        advapi32
+        shlwapi
+        iphlpapi
+  )
+endif()
 
 if(MSVC)
   target_compile_options(PyrethServer PRIVATE

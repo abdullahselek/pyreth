@@ -1,6 +1,17 @@
 #include <drogon/drogon.h>
 #include <json/json.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 #include <atomic>
 #include <future>
 #include <memory>
@@ -31,7 +42,42 @@ public:
     }
 
     // Configure Drogon
-    drogon::app().addListener(config_.host, static_cast<uint16_t>(config_.port));
+    uint16_t listen_port = static_cast<uint16_t>(config_.port);
+    if (listen_port == 0) {
+#ifdef _WIN32
+      SOCKET probe_sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if (probe_sock != INVALID_SOCKET) {
+        sockaddr_in probe_addr{};
+        probe_addr.sin_family = AF_INET;
+        probe_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        probe_addr.sin_port = 0;
+        if (::bind(probe_sock, reinterpret_cast<sockaddr*>(&probe_addr), sizeof(probe_addr)) == 0) {
+          int len = sizeof(probe_addr);
+          if (::getsockname(probe_sock, reinterpret_cast<sockaddr*>(&probe_addr), &len) == 0) {
+            listen_port = ntohs(probe_addr.sin_port);
+          }
+        }
+        ::closesocket(probe_sock);
+      }
+#else
+      int probe_sock = ::socket(AF_INET, SOCK_STREAM, 0);
+      if (probe_sock >= 0) {
+        sockaddr_in probe_addr{};
+        probe_addr.sin_family = AF_INET;
+        probe_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        probe_addr.sin_port = 0;
+        if (::bind(probe_sock, reinterpret_cast<sockaddr*>(&probe_addr), sizeof(probe_addr)) == 0) {
+          socklen_t len = sizeof(probe_addr);
+          if (::getsockname(probe_sock, reinterpret_cast<sockaddr*>(&probe_addr), &len) == 0) {
+            listen_port = ntohs(probe_addr.sin_port);
+          }
+        }
+        ::close(probe_sock);
+      }
+#endif
+    }
+
+    drogon::app().addListener(config_.host, listen_port);
     drogon::app().setThreadNum(config_.io_threads);
     drogon::app().setClientMaxBodySize(config_.max_payload_size);
     if (config_.request_timeout_ms > 0) {
@@ -99,12 +145,12 @@ public:
     std::promise<uint16_t> port_promise;
     auto port_future = port_promise.get_future();
 
-    drogon::app().registerBeginningAdvice([this, &port_promise]() {
+    drogon::app().registerBeginningAdvice([this, &port_promise, listen_port]() {
       auto listeners = drogon::app().getListeners();
-      if (!listeners.empty()) {
+      if (!listeners.empty() && listeners[0].toPort() != 0) {
         bound_port_ = listeners[0].toPort();
       } else {
-        bound_port_ = static_cast<uint16_t>(config_.port);
+        bound_port_ = listen_port;
       }
       port_promise.set_value(bound_port_);
     });
@@ -133,7 +179,7 @@ public:
       return;
     }
     if (drogon::app().isRunning()) {
-      drogon::app().getLoop()->queueInLoop([]() { drogon::app().quit(); });
+      drogon::app().quit();
     }
     if (server_thread_.joinable()) {
       server_thread_.join();
