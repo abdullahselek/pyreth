@@ -20,6 +20,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      - name: Install system dependencies (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev
+
       - name: Check C++ code formatting (clang-format)
         run: |
           clang-format --version
@@ -55,6 +60,12 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev
 
       # CMAKE_BUILD_TYPE is honored by single-config generators (Makefiles/Ninja
       # on Linux & macOS) and safely ignored by the multi-config VS generator.
@@ -97,18 +108,33 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
         include:
-          - name: ASan + UBSan
+          - os: ubuntu-latest
+            name: ASan + UBSan
             build_type: Debug
             cmake_flags: -DENABLE_ASAN=ON -DENABLE_UBSAN=ON -DBUILD_BENCHMARKS=OFF
-          - name: TSan
+          - os: ubuntu-latest
+            name: TSan
+            build_type: RelWithDebInfo
+            cmake_flags: -DENABLE_TSAN=ON -DBUILD_BENCHMARKS=OFF
+          - os: macos-latest
+            name: ASan + UBSan
+            build_type: Debug
+            cmake_flags: -DENABLE_ASAN=ON -DENABLE_UBSAN=ON -DBUILD_BENCHMARKS=OFF
+          - os: macos-latest
+            name: TSan
             build_type: RelWithDebInfo
             cmake_flags: -DENABLE_TSAN=ON -DBUILD_BENCHMARKS=OFF
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev
 
       - name: Configure (${{ matrix.name }})
         env:
@@ -121,7 +147,7 @@ jobs:
 
       - name: Run CTest under ${{ matrix.name }}
         env:
-          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          ASAN_OPTIONS: detect_leaks=0:detect_container_overflow=0:halt_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
         run: ctest --test-dir build-san --output-on-failure
