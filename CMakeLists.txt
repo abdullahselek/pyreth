@@ -17,6 +17,9 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Export compile commands for tooling (clangd, clang-tidy, etc.)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Insert custom CMake module search path
+list(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
+
 # Sanitizers (AddressSanitizer, UndefinedBehaviorSanitizer, ThreadSanitizer)
 option(ENABLE_ASAN "Enable AddressSanitizer (ASan)" OFF)
 option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer (UBSan)" OFF)
@@ -124,23 +127,6 @@ if(NOT ZLIB_FOUND)
   set(ZLIB_INCLUDE_DIR "${zlib_SOURCE_DIR}" CACHE PATH "ZLIB include directory" FORCE)
   set(ZLIB_INCLUDE_DIRS "${zlib_SOURCE_DIR};${zlib_BINARY_DIR}" CACHE PATH "ZLIB include directories" FORCE)
   set(ZLIB_FOUND TRUE CACHE BOOL "ZLIB found" FORCE)
-  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/cmake_modules/FindZLIB.cmake"
-"if(NOT TARGET ZLIB::ZLIB)
-  if(TARGET zlibstatic)
-    add_library(ZLIB::ZLIB ALIAS zlibstatic)
-  elseif(TARGET zlib)
-    add_library(ZLIB::ZLIB ALIAS zlib)
-  endif()
-endif()
-set(ZLIB_INCLUDE_DIRS \"${zlib_SOURCE_DIR};${zlib_BINARY_DIR}\")
-set(ZLIB_INCLUDE_DIR \"${zlib_SOURCE_DIR}\")
-set(ZLIB_LIBRARIES ZLIB::ZLIB)
-set(ZLIB_LIBRARY ZLIB::ZLIB)
-set(ZLIB_VERSION_STRING \"1.3.1\")
-set(ZLIB_VERSION \"1.3.1\")
-set(ZLIB_FOUND TRUE)
-")
-  list(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_CURRENT_BINARY_DIR}/cmake_modules")
 endif()
 
 # Pre-define std::filesystem imported target so Drogon's FindFilesystem doesn't fail on MSVC
