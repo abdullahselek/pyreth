@@ -148,16 +148,21 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(drogon)
 
-# If zlib was built locally via FetchContent, add it to DrogonTargets export set
+# If zlib was built locally via FetchContent, fix INTERFACE_INCLUDE_DIRECTORIES
+# to use BUILD_INTERFACE and add zlibstatic to DrogonTargets export set
 # so that install(EXPORT "DrogonTargets" ...) in Drogon passes CMake generation.
 foreach(_tgt IN ITEMS zlibstatic zlib)
   if(TARGET ${_tgt})
-    install(TARGETS ${_tgt} EXPORT DrogonTargets
-      RUNTIME DESTINATION bin
-      ARCHIVE DESTINATION lib
-      LIBRARY DESTINATION lib)
+    set_target_properties(${_tgt} PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${zlib_SOURCE_DIR};${zlib_BINARY_DIR}>")
   endif()
 endforeach()
+if(TARGET zlibstatic)
+  install(TARGETS zlibstatic EXPORT DrogonTargets
+    RUNTIME DESTINATION bin
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib)
+endif()
 
 # Suppress compiler warnings and deprecation errors from Drogon, Trantor, and Zlib sources
 foreach(_tgt IN ITEMS drogon trantor zlib zlibstatic)
