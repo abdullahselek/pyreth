@@ -74,10 +74,8 @@ jobs:
         shell: bash
         run: |
           if ! cmake -B build -S . -DCMAKE_BUILD_TYPE=Release 2>&1 | tee cmake_conf.log; then
-            echo "### CMake Configure Failure" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -n 100 cmake_conf.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            ERR=$(tail -n 25 cmake_conf.log | tr '\r\n' ' ')
+            echo "::error title=CMake Error::$ERR"
             exit 1
           fi
 
