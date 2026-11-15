@@ -65,34 +65,41 @@ HttpResponse sendHttpRequest(
     const std::string& host, uint16_t port, const std::string& method, const std::string& path,
     const std::string& body = "",
     const std::vector<std::pair<std::string, std::string>>& extra_headers = {}) {
-  socket_t sock = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (!isValidSocket(sock)) {
-    return {};
-  }
-
-  // Set timeout of 5 seconds
-#ifdef _WIN32
-  DWORD timeout_ms = 5000;
-  ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms),
-               sizeof(timeout_ms));
-  ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms),
-               sizeof(timeout_ms));
-#else
-  struct timeval tv{};
-  tv.tv_sec = 5;
-  tv.tv_usec = 0;
-  ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-#endif
-
+  std::string target_ip = (host == "0.0.0.0" || host.empty()) ? "127.0.0.1" : host;
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
-  std::string target_ip = (host == "0.0.0.0" || host.empty()) ? "127.0.0.1" : host;
   ::inet_pton(AF_INET, target_ip.c_str(), &addr.sin_addr);
 
-  if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+  socket_t sock;
+  bool connected = false;
+  for (int attempt = 0; attempt < 50; ++attempt) {
+    sock = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (!isValidSocket(sock)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
+#ifdef _WIN32
+    DWORD timeout_ms = 5000;
+    ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms),
+                 sizeof(timeout_ms));
+    ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms),
+                 sizeof(timeout_ms));
+#else
+    struct timeval tv{};
+    tv.tv_sec = 5;
+    tv.tv_usec = 0;
+    ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+    if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+      connected = true;
+      break;
+    }
     closeSocket(sock);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (!connected) {
     return {};
   }
 
@@ -318,7 +325,7 @@ TEST(ServerFoundationTest, ServerLifecycle_RAIIDestruction) {
   }
 
   // Give OS a moment to finish teardown
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
   // After destruction, the port should be unbound; connect should fail
   socket_t sock = ::socket(AF_INET, SOCK_STREAM, 0);

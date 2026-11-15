@@ -47,6 +47,9 @@ public:
 #ifdef _WIN32
       SOCKET probe_sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
       if (probe_sock != INVALID_SOCKET) {
+        int opt = 1;
+        ::setsockopt(probe_sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&opt),
+                     sizeof(opt));
         sockaddr_in probe_addr{};
         probe_addr.sin_family = AF_INET;
         probe_addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -62,6 +65,11 @@ public:
 #else
       int probe_sock = ::socket(AF_INET, SOCK_STREAM, 0);
       if (probe_sock >= 0) {
+        int opt = 1;
+        ::setsockopt(probe_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#ifdef SO_REUSEPORT
+        ::setsockopt(probe_sock, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+#endif
         sockaddr_in probe_addr{};
         probe_addr.sin_family = AF_INET;
         probe_addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -79,6 +87,7 @@ public:
 
     drogon::app().addListener(config_.host, listen_port);
     drogon::app().setThreadNum(config_.io_threads);
+    drogon::app().enableReusePort(true);
     drogon::app().setClientMaxBodySize(config_.max_payload_size);
     if (config_.request_timeout_ms > 0) {
       drogon::app().setIdleConnectionTimeout(
@@ -159,6 +168,40 @@ public:
 
     bound_port_ = port_future.get();
     running_.store(true);
+
+    // Wait until listener socket is ready to accept connections (up to 2 seconds)
+    auto start_time = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start_time < std::chrono::seconds(2)) {
+#ifdef _WIN32
+      SOCKET test_s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if (test_s != INVALID_SOCKET) {
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_port = htons(bound_port_);
+        ::inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+        if (::connect(test_s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0) {
+          ::closesocket(test_s);
+          break;
+        }
+        ::closesocket(test_s);
+      }
+#else
+      int test_s = ::socket(AF_INET, SOCK_STREAM, 0);
+      if (test_s >= 0) {
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_port = htons(bound_port_);
+        ::inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+        if (::connect(test_s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0) {
+          ::close(test_s);
+          break;
+        }
+        ::close(test_s);
+      }
+#endif
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
     return Result<void>::success();
   }
 

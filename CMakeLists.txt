@@ -96,6 +96,16 @@ if(NOT ZLIB_FOUND)
   elseif(TARGET zlib AND NOT TARGET ZLIB::ZLIB)
     add_library(ZLIB::ZLIB ALIAS zlib)
   endif()
+  if(TARGET zlibstatic)
+    set(_zlib_target zlibstatic)
+  else()
+    set(_zlib_target zlib)
+  endif()
+  set(ZLIB_INCLUDE_DIR "${zlib_SOURCE_DIR}" CACHE PATH "ZLIB include directory" FORCE)
+  set(ZLIB_INCLUDE_DIRS "${zlib_SOURCE_DIR};${zlib_BINARY_DIR}" CACHE PATH "ZLIB include directories" FORCE)
+  set(ZLIB_LIBRARY "${_zlib_target}" CACHE STRING "ZLIB library" FORCE)
+  set(ZLIB_LIBRARIES "${_zlib_target}" CACHE STRING "ZLIB libraries" FORCE)
+  set(ZLIB_FOUND TRUE CACHE BOOL "ZLIB found" FORCE)
   file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/cmake/zlib/ZLIBConfig.cmake"
     "set(ZLIB_FOUND TRUE)\nset(ZLIB_INCLUDE_DIRS \"${zlib_SOURCE_DIR};${zlib_BINARY_DIR}\")\nif(NOT TARGET ZLIB::ZLIB)\n  if(TARGET zlibstatic)\n    add_library(ZLIB::ZLIB ALIAS zlibstatic)\n  elseif(TARGET zlib)\n    add_library(ZLIB::ZLIB ALIAS zlib)\n  endif()\nendif()\n"
   )
@@ -114,7 +124,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(drogon)
 
 # Suppress compiler warnings and deprecation errors from Drogon, Trantor, and Zlib sources
-foreach(_tgt IN ITEMS drogon trantor zlibstatic)
+foreach(_tgt IN ITEMS drogon trantor zlib zlibstatic)
   if(TARGET ${_tgt})
     if(MSVC)
       target_compile_options(${_tgt} PRIVATE /w)
