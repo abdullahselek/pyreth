@@ -73,18 +73,12 @@ jobs:
       - name: Configure
         shell: bash
         run: |
-          if ! cmake -B build -S . -DCMAKE_BUILD_TYPE=Release; then
-            echo "### CMake Configure Failure" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            if [ -f build/CMakeFiles/CMakeError.log ]; then
-              cat build/CMakeFiles/CMakeError.log >> $GITHUB_STEP_SUMMARY
-            fi
-            if [ -f build/CMakeFiles/CMakeConfigureLog.yaml ]; then
-              tail -n 120 build/CMakeFiles/CMakeConfigureLog.yaml >> $GITHUB_STEP_SUMMARY
-            fi
-            echo '```' >> $GITHUB_STEP_SUMMARY
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release 2>&1 | tee cmake_conf.log || {
+            while IFS= read -r line; do
+              echo "::error::$line"
+            done < <(tail -n 50 cmake_conf.log)
             exit 1
-          fi
+          }
 
       # Windows uses the multi-config Visual Studio generator -> build a specific
       # configuration. Linux/macOS are single-config and use CMAKE_BUILD_TYPE above.

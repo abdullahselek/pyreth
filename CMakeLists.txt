@@ -137,6 +137,14 @@ if(NOT ZLIB_FOUND)
   list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_BINARY_DIR}/cmake/zlib")
 endif()
 
+# Pre-define std::filesystem imported target so Drogon's FindFilesystem doesn't fail on MSVC
+if(NOT TARGET std::filesystem)
+  add_library(std::filesystem INTERFACE IMPORTED)
+  set_property(TARGET std::filesystem APPEND PROPERTY INTERFACE_COMPILE_FEATURES cxx_std_17)
+  set(CXX_FILESYSTEM_HAVE_FS TRUE CACHE BOOL "" FORCE)
+  set(Filesystem_FOUND TRUE CACHE BOOL "" FORCE)
+endif()
+
 FetchContent_Declare(
   drogon
   GIT_REPOSITORY https://github.com/drogonframework/drogon.git
