@@ -71,13 +71,7 @@ jobs:
       # on Linux & macOS) and safely ignored by the multi-config VS generator.
       # Note: first configure downloads GoogleTest via FetchContent (needs network).
       - name: Configure
-        shell: bash
-        run: |
-          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release 2>&1 | tee cmake_conf.log || {
-            ERR=$(tail -n 25 cmake_conf.log | tr '\r\n' ' ')
-            echo "::error title=CMake Error::$ERR"
-            exit 1
-          }
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 
       # Windows uses the multi-config Visual Studio generator -> build a specific
       # configuration. Linux/macOS are single-config and use CMAKE_BUILD_TYPE above.
