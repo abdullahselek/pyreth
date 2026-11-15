@@ -148,6 +148,17 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(drogon)
 
+# If zlib was built locally via FetchContent, add it to DrogonTargets export set
+# so that install(EXPORT "DrogonTargets" ...) in Drogon passes CMake generation.
+foreach(_tgt IN ITEMS zlibstatic zlib)
+  if(TARGET ${_tgt})
+    install(TARGETS ${_tgt} EXPORT DrogonTargets
+      RUNTIME DESTINATION bin
+      ARCHIVE DESTINATION lib
+      LIBRARY DESTINATION lib)
+  endif()
+endforeach()
+
 # Suppress compiler warnings and deprecation errors from Drogon, Trantor, and Zlib sources
 foreach(_tgt IN ITEMS drogon trantor zlib zlibstatic)
   if(TARGET ${_tgt})
