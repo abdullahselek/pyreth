@@ -17,6 +17,31 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Export compile commands for tooling (clangd, clang-tidy, etc.)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Sanitizers (AddressSanitizer, UndefinedBehaviorSanitizer, ThreadSanitizer)
+option(ENABLE_ASAN "Enable AddressSanitizer (ASan)" OFF)
+option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer (UBSan)" OFF)
+option(ENABLE_TSAN "Enable ThreadSanitizer (TSan)" OFF)
+
+if(ENABLE_ASAN AND ENABLE_TSAN)
+  message(FATAL_ERROR "ENABLE_ASAN and ENABLE_TSAN cannot be enabled simultaneously.")
+endif()
+
+set(PYRETH_SANITIZER_FLAGS "")
+if(ENABLE_ASAN)
+  list(APPEND PYRETH_SANITIZER_FLAGS "-fsanitize=address")
+endif()
+if(ENABLE_UBSAN)
+  list(APPEND PYRETH_SANITIZER_FLAGS "-fsanitize=undefined" "-fno-sanitize-recover=all")
+endif()
+if(ENABLE_TSAN)
+  list(APPEND PYRETH_SANITIZER_FLAGS "-fsanitize=thread")
+endif()
+
+if(PYRETH_SANITIZER_FLAGS AND NOT MSVC)
+  add_compile_options(${PYRETH_SANITIZER_FLAGS} -fno-omit-frame-pointer -g)
+  add_link_options(${PYRETH_SANITIZER_FLAGS})
+endif()
+
 # ONNX Runtime Integration
 include(cmake/OnnxRuntime.cmake)
 
@@ -188,41 +213,8 @@ else()
   )
 endif()
 
-# Sanitizers (AddressSanitizer, UndefinedBehaviorSanitizer, ThreadSanitizer)
-option(ENABLE_ASAN "Enable AddressSanitizer (ASan)" OFF)
-option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer (UBSan)" OFF)
-option(ENABLE_TSAN "Enable ThreadSanitizer (TSan)" OFF)
-
-if(ENABLE_ASAN AND ENABLE_TSAN)
-  message(FATAL_ERROR "ENABLE_ASAN and ENABLE_TSAN cannot be enabled simultaneously.")
-endif()
-
-set(PYRETH_SANITIZER_FLAGS "")
-if(ENABLE_ASAN)
-  list(APPEND PYRETH_SANITIZER_FLAGS "-fsanitize=address")
-endif()
-if(ENABLE_UBSAN)
-  list(APPEND PYRETH_SANITIZER_FLAGS "-fsanitize=undefined" "-fno-sanitize-recover=all")
-endif()
-if(ENABLE_TSAN)
-  list(APPEND PYRETH_SANITIZER_FLAGS "-fsanitize=thread")
-endif()
-
-if(PYRETH_SANITIZER_FLAGS)
-  if(MSVC)
-    if(ENABLE_ASAN)
-      target_compile_options(EngineCore PUBLIC /fsanitize=address /Zi)
-    endif()
-  else()
-    target_compile_options(EngineCore PUBLIC
-      -fno-omit-frame-pointer
-      -g
-      ${PYRETH_SANITIZER_FLAGS}
-    )
-    target_link_options(EngineCore PUBLIC
-      ${PYRETH_SANITIZER_FLAGS}
-    )
-  endif()
+if(PYRETH_SANITIZER_FLAGS AND MSVC AND ENABLE_ASAN)
+  target_compile_options(EngineCore PUBLIC /fsanitize=address /Zi)
 endif()
 
 # Pyreth Server Target (Static Library)
@@ -278,21 +270,8 @@ else()
   )
 endif()
 
-if(PYRETH_SANITIZER_FLAGS)
-  if(MSVC)
-    if(ENABLE_ASAN)
-      target_compile_options(PyrethServer PUBLIC /fsanitize=address /Zi)
-    endif()
-  else()
-    target_compile_options(PyrethServer PUBLIC
-      -fno-omit-frame-pointer
-      -g
-      ${PYRETH_SANITIZER_FLAGS}
-    )
-    target_link_options(PyrethServer PUBLIC
-      ${PYRETH_SANITIZER_FLAGS}
-    )
-  endif()
+if(PYRETH_SANITIZER_FLAGS AND MSVC AND ENABLE_ASAN)
+  target_compile_options(PyrethServer PUBLIC /fsanitize=address /Zi)
 endif()
 
 # Testing (CTest)
