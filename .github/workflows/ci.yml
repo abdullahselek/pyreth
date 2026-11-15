@@ -74,9 +74,8 @@ jobs:
         shell: bash
         run: |
           cmake -B build -S . -DCMAKE_BUILD_TYPE=Release 2>&1 | tee cmake_conf.log || {
-            while IFS= read -r line; do
-              echo "::error::$line"
-            done < <(tail -n 50 cmake_conf.log)
+            ERR=$(tail -n 25 cmake_conf.log | tr '\r\n' ' ')
+            echo "::error title=CMake Error::$ERR"
             exit 1
           }
 
