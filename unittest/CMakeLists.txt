@@ -18,6 +18,7 @@ add_executable(pyreth_tests
 target_link_libraries(pyreth_tests
     PRIVATE
         EngineCore
+        PyrethServer
         GTest::gtest
 )
 

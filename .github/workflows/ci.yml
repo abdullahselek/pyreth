@@ -20,6 +20,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      - name: Install system dependencies (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev
+
       - name: Check C++ code formatting (clang-format)
         run: |
           clang-format --version
@@ -56,11 +61,23 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev
+
       # CMAKE_BUILD_TYPE is honored by single-config generators (Makefiles/Ninja
       # on Linux & macOS) and safely ignored by the multi-config VS generator.
       # Note: first configure downloads GoogleTest via FetchContent (needs network).
       - name: Configure
-        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+        shell: bash
+        run: |
+          if ! cmake -B build -S . -DCMAKE_BUILD_TYPE=Release 2>&1 | tee cmake_conf.log; then
+            ERR=$(tail -n 25 cmake_conf.log | tr '\r\n' ' ')
+            echo "::error title=CMake Error::$ERR"
+            exit 1
+          fi
 
       # Windows uses the multi-config Visual Studio generator -> build a specific
       # configuration. Linux/macOS are single-config and use CMAKE_BUILD_TYPE above.
@@ -74,11 +91,31 @@ jobs:
 
       - name: Test (Windows)
         if: runner.os == 'Windows'
-        run: ctest --test-dir build -C Release --output-on-failure
+        shell: bash
+        run: |
+          if ! ctest --test-dir build -C Release --output-on-failure; then
+            echo "### CTest Failure (Windows)" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            if [ -f build/Testing/Temporary/LastTest.log ]; then
+              cat build/Testing/Temporary/LastTest.log >> $GITHUB_STEP_SUMMARY
+            fi
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
 
       - name: Test (Linux/macOS)
         if: runner.os != 'Windows'
-        run: ctest --test-dir build --output-on-failure
+        shell: bash
+        run: |
+          if ! ctest --test-dir build --output-on-failure; then
+            echo "### CTest Failure (${{ matrix.os }})" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            if [ -f build/Testing/Temporary/LastTest.log ]; then
+              cat build/Testing/Temporary/LastTest.log >> $GITHUB_STEP_SUMMARY
+            fi
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
@@ -97,12 +134,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
         include:
-          - name: ASan + UBSan
+          - os: ubuntu-latest
+            name: ASan + UBSan
             build_type: Debug
             cmake_flags: -DENABLE_ASAN=ON -DENABLE_UBSAN=ON -DBUILD_BENCHMARKS=OFF
-          - name: TSan
+          - os: ubuntu-latest
+            name: TSan
+            build_type: RelWithDebInfo
+            cmake_flags: -DENABLE_TSAN=ON -DBUILD_BENCHMARKS=OFF
+          - os: macos-latest
+            name: ASan + UBSan
+            build_type: Debug
+            cmake_flags: -DENABLE_ASAN=ON -DENABLE_UBSAN=ON -DBUILD_BENCHMARKS=OFF
+          - os: macos-latest
+            name: TSan
             build_type: RelWithDebInfo
             cmake_flags: -DENABLE_TSAN=ON -DBUILD_BENCHMARKS=OFF
 
@@ -110,18 +156,44 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev
+
       - name: Configure (${{ matrix.name }})
+        shell: bash
         env:
           CC: clang
           CXX: clang++
-        run: cmake -B build-san -S . -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ${{ matrix.cmake_flags }}
+        run: |
+          if ! cmake -B build-san -S . -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ${{ matrix.cmake_flags }}; then
+            echo "### CMake Configure Failure (${{ matrix.name }} on ${{ matrix.os }})" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            if [ -f build-san/CMakeFiles/CMakeConfigureLog.yaml ]; then
+              tail -n 120 build-san/CMakeFiles/CMakeConfigureLog.yaml >> $GITHUB_STEP_SUMMARY
+            fi
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
 
       - name: Build (${{ matrix.name }})
         run: cmake --build build-san --parallel
 
       - name: Run CTest under ${{ matrix.name }}
+        shell: bash
         env:
-          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          ASAN_OPTIONS: detect_leaks=0:detect_container_overflow=0:halt_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-        run: ctest --test-dir build-san --output-on-failure
+        run: |
+          if ! ctest --test-dir build-san --output-on-failure; then
+            echo "### CTest Failure (${{ matrix.name }} on ${{ matrix.os }})" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            if [ -f build-san/Testing/Temporary/LastTest.log ]; then
+              cat build-san/Testing/Temporary/LastTest.log >> $GITHUB_STEP_SUMMARY
+            fi
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi

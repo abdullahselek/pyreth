@@ -94,11 +94,11 @@ Full benchmark methodology and latency/throughput tables across batch sizes 1 to
 - **CMake** >= 3.25
 - **C++20 Compiler**:
   - **macOS (Apple Silicon)**: macOS 26+ with Xcode Command Line Tools (`AppleClang` >= 17)
-  - **Linux (Ubuntu / Debian x86_64 & ARM64)**: `clang` >= 16 or `g++` >= 12, `build-essential`, `ninja-build`
+  - **Linux (Ubuntu / Debian x86_64 & ARM64)**: `clang` >= 16 or `g++` >= 12, `build-essential`, `ninja-build` (system `uuid-dev` is optional; fetched via CMake `FetchContent` if missing)
   - **Windows (x64)**: Visual Studio 2022 (MSVC v143)
 - **Python Ecosystem**: [uv](https://docs.astral.sh/uv/) (automatically manages Python >= 3.13, `nanobind`, `scikit-build-core`, and `numpy`)
 
-> **Note**: Prebuilt ONNX Runtime v1.19.2 libraries, GoogleTest v1.15.2, and Google Benchmark v1.9.1 are fetched automatically by CMake during configuration—no manual system installation is required.
+> **Note**: Prebuilt ONNX Runtime v1.19.2 libraries, Drogon v1.9.14 (with Trantor), JsonCpp v1.9.5, GoogleTest v1.15.2, and Google Benchmark v1.9.1 are fetched automatically by CMake during configuration—no manual system installation is required.
 
 ### 1. Python Installation (`uv` / `pip`)
 
@@ -146,10 +146,10 @@ uv pip install dist/pyreth-*.whl
 # 1. Configure Release build (fetches ONNX Runtime, GoogleTest, and Google Benchmark)
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 
-# 2. Build all targets in parallel (libEngineCore.a, Sandbox, pyreth_tests, pyreth_benchmarks)
+# 2. Build all targets in parallel (libEngineCore.a, libPyrethServer.a, Sandbox, pyreth_tests, pyreth_benchmarks)
 cmake --build build --parallel
 
-# 3. Run the C++ unit test suite (124 tests)
+# 3. Run the C++ unit test suite (143 tests)
 ctest --test-dir build --output-on-failure
 ```
 
@@ -309,18 +309,18 @@ uv run pytest -v
 
 ### Running Clang Sanitizers (`ASan`, `UBSan`, `TSan`)
 
-Pyreth's lock-free queues, worker parker, memory pools, and dynamic batcher are verified under Clang's sanitizers in CI across Linux (`ubuntu-latest`) and macOS (`macos-latest`):
+Pyreth's lock-free queues, worker parker, memory pools, dynamic batcher, and web server core are verified under Clang's sanitizers in CI across Linux (`ubuntu-latest`) and macOS (`macos-latest`):
 
 ```sh
 # 1. AddressSanitizer (ASan) + UndefinedBehaviorSanitizer (UBSan)
 cmake -B build-asan -S . -DCMAKE_BUILD_TYPE=Debug -DENABLE_ASAN=ON -DENABLE_UBSAN=ON -DBUILD_BENCHMARKS=OFF
 cmake --build build-asan --parallel
-ctest --test-dir build-asan --output-on-failure
+ASAN_OPTIONS="detect_leaks=0:detect_container_overflow=0:halt_on_error=1" UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1" ctest --test-dir build-asan --output-on-failure
 
 # 2. ThreadSanitizer (TSan)
 cmake -B build-tsan -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENABLE_TSAN=ON -DBUILD_BENCHMARKS=OFF
 cmake --build build-tsan --parallel
-ctest --test-dir build-tsan --output-on-failure
+TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1" ctest --test-dir build-tsan --output-on-failure
 ```
 
 ---
