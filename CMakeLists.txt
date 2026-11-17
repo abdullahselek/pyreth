@@ -236,6 +236,8 @@ endif()
 # Pyreth Server Target (Static Library)
 add_library(PyrethServer STATIC
     src/server/http_server.cpp
+    src/server/model_registry.cpp
+    src/server/protocol.cpp
 )
 
 set_target_properties(PyrethServer PROPERTIES
