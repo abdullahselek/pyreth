@@ -1,5 +1,10 @@
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
@@ -39,6 +44,16 @@ inline int closeSocket(socket_t s) {
 inline bool isValidSocket(socket_t s) {
   return s != INVALID_SOCKET;
 }
+
+class WinsockScope {
+public:
+  WinsockScope() {
+    WSADATA wsa_data;
+    ::WSAStartup(MAKEWORD(2, 2), &wsa_data);
+  }
+  ~WinsockScope() { ::WSACleanup(); }
+};
+static WinsockScope g_winsock_scope;
 #else
 using socket_t = int;
 inline int closeSocket(socket_t s) {

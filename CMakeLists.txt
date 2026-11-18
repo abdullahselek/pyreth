@@ -11,6 +11,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(WIN32)
+  add_compile_definitions(NOMINMAX)
+endif()
+
 # Position Independent Code (required when static libraries are linked into shared modules on Linux)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
