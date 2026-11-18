@@ -193,13 +193,11 @@ public:
   constexpr Result(E&& err) noexcept(std::is_nothrow_move_constructible_v<E>)
       : error_(std::move(err)) {}
 
-  constexpr Result(StatusCode code)
-    requires std::is_constructible_v<E, StatusCode>
-      : error_(E(code)) {}
-
-  constexpr Result(ErrorCode code)
-    requires std::is_constructible_v<E, StatusCode>
-      : error_(E(static_cast<StatusCode>(code))) {}
+  template <typename S>
+    requires(std::is_same_v<std::decay_t<S>, StatusCode> ||
+             std::is_same_v<std::decay_t<S>, ErrorCode>) &&
+            std::is_constructible_v<E, StatusCode>
+  constexpr Result(S code) : error_(E(static_cast<StatusCode>(code))) {}
 
   static constexpr Result success() noexcept { return Result(); }
 
@@ -322,13 +320,11 @@ public:
   constexpr Result(E&& err) noexcept(std::is_nothrow_move_constructible_v<E>)
       : storage_(std::in_place_index<1>, std::move(err)) {}
 
-  constexpr Result(StatusCode code)
-    requires std::is_constructible_v<E, StatusCode>
-      : storage_(std::in_place_index<1>, E(code)) {}
-
-  constexpr Result(ErrorCode code)
-    requires std::is_constructible_v<E, StatusCode>
-      : storage_(std::in_place_index<1>, E(static_cast<StatusCode>(code))) {}
+  template <typename S>
+    requires(std::is_same_v<std::decay_t<S>, StatusCode> ||
+             std::is_same_v<std::decay_t<S>, ErrorCode>) &&
+            std::is_constructible_v<E, StatusCode>
+  constexpr Result(S code) : storage_(std::in_place_index<1>, E(static_cast<StatusCode>(code))) {}
 
   template <typename... Args>
   static constexpr Result success(Args&&... args) {
