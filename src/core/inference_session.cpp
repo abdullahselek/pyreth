@@ -1,7 +1,14 @@
 #include <onnxruntime_cxx_api.h>
 
-#if defined(__APPLE__) && __has_include(<coreml_provider_factory.h>)
+#if defined(__APPLE__)
+#if __has_include(<coreml_provider_factory.h>)
 #include <coreml_provider_factory.h>
+#else
+extern "C" {
+ORT_EXPORT OrtStatus* OrtSessionOptionsAppendExecutionProvider_CoreML(OrtSessionOptions* options,
+                                                                      uint32_t coreml_flags);
+}
+#endif
 #endif
 
 #include <algorithm>
@@ -195,7 +202,7 @@ static Result<Ort::SessionOptions> configureSessionOptions(
 
     switch (provider) {
       case ExecutionProvider::COREML: {
-#if defined(__APPLE__) && __has_include(<coreml_provider_factory.h>)
+#if defined(__APPLE__)
         uint32_t flags = 0;
         OrtStatus* status = OrtSessionOptionsAppendExecutionProvider_CoreML(
             static_cast<OrtSessionOptions*>(opts), flags);

@@ -85,10 +85,36 @@ else()
     set(ORT_INCLUDE_DIR "${onnxruntime_prebuilt_SOURCE_DIR}/include")
   endif()
 
+  if(APPLE AND NOT EXISTS "${ORT_INCLUDE_DIR}/coreml_provider_factory.h")
+    file(WRITE "${ORT_INCLUDE_DIR}/coreml_provider_factory.h"
+"// Generated CoreML provider factory header
+#pragma once
+#include \"onnxruntime_c_api.h\"
+
+#ifdef __cplusplus
+extern \"C\" {
+#endif
+
+ORT_EXPORT ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_CoreML,
+                          _In_ OrtSessionOptions* options, uint32_t coreml_flags);
+
+#ifdef __cplusplus
+}
+#endif
+")
+  endif()
+
   set(ORT_SEARCH_LIB_PATHS
       "${onnxruntime_prebuilt_SOURCE_DIR}/runtimes/${ORT_PLATFORM}/native"
       "${onnxruntime_prebuilt_SOURCE_DIR}/lib"
   )
+
+  if(ORT_LIBRARY AND NOT EXISTS "${ORT_LIBRARY}")
+    unset(ORT_LIBRARY CACHE)
+  endif()
+  if(ORT_DLL AND NOT EXISTS "${ORT_DLL}")
+    unset(ORT_DLL CACHE)
+  endif()
 
   if(WIN32)
     find_file(ORT_DLL
@@ -110,29 +136,31 @@ else()
             NO_DEFAULT_PATH
             REQUIRED
         )
-    get_filename_component(ORT_NATIVE_DIR "${ORT_LIBRARY}" DIRECTORY)
-    if(APPLE)
-      file(CREATE_LINK
-          "${ORT_LIBRARY}"
-          "${ORT_NATIVE_DIR}/libonnxruntime.${ONNXRUNTIME_VERSION}.dylib"
-          COPY_ON_ERROR
-          SYMBOLIC
-      )
-    else()
-      string(REGEX MATCH "^[0-9]+" ORT_MAJOR_VERSION "${ONNXRUNTIME_VERSION}")
-      file(CREATE_LINK
-          "${ORT_LIBRARY}"
-          "${ORT_NATIVE_DIR}/libonnxruntime.so.${ONNXRUNTIME_VERSION}"
-          COPY_ON_ERROR
-          SYMBOLIC
-      )
-      if(ORT_MAJOR_VERSION)
+    if(EXISTS "${ORT_LIBRARY}")
+      get_filename_component(ORT_NATIVE_DIR "${ORT_LIBRARY}" DIRECTORY)
+      if(APPLE)
         file(CREATE_LINK
             "${ORT_LIBRARY}"
-            "${ORT_NATIVE_DIR}/libonnxruntime.so.${ORT_MAJOR_VERSION}"
+            "${ORT_NATIVE_DIR}/libonnxruntime.${ONNXRUNTIME_VERSION}.dylib"
             COPY_ON_ERROR
             SYMBOLIC
         )
+      else()
+        string(REGEX MATCH "^[0-9]+" ORT_MAJOR_VERSION "${ONNXRUNTIME_VERSION}")
+        file(CREATE_LINK
+            "${ORT_LIBRARY}"
+            "${ORT_NATIVE_DIR}/libonnxruntime.so.${ONNXRUNTIME_VERSION}"
+            COPY_ON_ERROR
+            SYMBOLIC
+        )
+        if(ORT_MAJOR_VERSION)
+          file(CREATE_LINK
+              "${ORT_LIBRARY}"
+              "${ORT_NATIVE_DIR}/libonnxruntime.so.${ORT_MAJOR_VERSION}"
+              COPY_ON_ERROR
+              SYMBOLIC
+          )
+        endif()
       endif()
     endif()
   endif()
