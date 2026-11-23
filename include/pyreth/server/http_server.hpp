@@ -4,6 +4,7 @@
 #include <memory>
 #include <pyreth/common.hpp>
 #include <pyreth/result.hpp>
+#include <pyreth/server/model_registry.hpp>
 #include <pyreth/server/server_config.hpp>
 #include <pyreth/thread_pool.hpp>
 #include <string>
@@ -34,6 +35,17 @@ public:
   [[nodiscard]] const std::string& host() const noexcept;
   [[nodiscard]] const ServerConfig& config() const noexcept;
   [[nodiscard]] ThreadPool& threadPool() noexcept;
+
+  [[nodiscard]] Result<void> registerModel(std::string name,
+                                           std::shared_ptr<InferenceSession> session,
+                                           std::string version = "1");
+  [[nodiscard]] Result<void> registerBatcher(std::string name,
+                                             std::shared_ptr<DynamicBatcher> batcher);
+  [[nodiscard]] Result<void> unregisterModel(std::string_view name);
+  [[nodiscard]] bool hasModel(std::string_view name) const;
+
+  [[nodiscard]] ModelRegistry& modelRegistry() noexcept;
+  [[nodiscard]] const ModelRegistry& modelRegistry() const noexcept;
 
 private:
   class Impl;

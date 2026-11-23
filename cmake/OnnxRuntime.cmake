@@ -40,22 +40,20 @@ if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
 else()
   # 2. Determine platform and architecture for official prebuilt binary
   set(ORT_PLATFORM "")
-  set(ORT_EXT "tgz")
 
   if(APPLE)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
       set(ORT_PLATFORM "osx-arm64")
     else()
-      set(ORT_PLATFORM "osx-x86_64")
+      set(ORT_PLATFORM "osx-x64")
     endif()
   elseif(UNIX AND NOT APPLE)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
-      set(ORT_PLATFORM "linux-aarch64")
+      set(ORT_PLATFORM "linux-arm64")
     else()
       set(ORT_PLATFORM "linux-x64")
     endif()
   elseif(WIN32)
-    set(ORT_EXT "zip")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
       set(ORT_PLATFORM "win-arm64")
     else()
@@ -67,8 +65,7 @@ else()
     message(FATAL_ERROR "Unsupported platform for prebuilt ONNX Runtime: ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_PROCESSOR}")
   endif()
 
-  set(ORT_ARCHIVE_NAME "onnxruntime-${ORT_PLATFORM}-${ONNXRUNTIME_VERSION}")
-  set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/${ORT_ARCHIVE_NAME}.${ORT_EXT}")
+  set(ORT_URL "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime/${ONNXRUNTIME_VERSION}")
 
   message(STATUS "Using prebuilt ONNX Runtime ${ONNXRUNTIME_VERSION} for ${ORT_PLATFORM}")
   message(STATUS "Downloading from: ${ORT_URL}")
@@ -77,31 +74,95 @@ else()
   FetchContent_Declare(
         onnxruntime_prebuilt
         URL ${ORT_URL}
+        DOWNLOAD_NAME "microsoft.ml.onnxruntime.${ONNXRUNTIME_VERSION}.zip"
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
   FetchContent_MakeAvailable(onnxruntime_prebuilt)
 
-  set(ORT_INCLUDE_DIR "${onnxruntime_prebuilt_SOURCE_DIR}/include")
+  if(EXISTS "${onnxruntime_prebuilt_SOURCE_DIR}/build/native/include")
+    set(ORT_INCLUDE_DIR "${onnxruntime_prebuilt_SOURCE_DIR}/build/native/include")
+  else()
+    set(ORT_INCLUDE_DIR "${onnxruntime_prebuilt_SOURCE_DIR}/include")
+  endif()
+
+  if(APPLE AND NOT EXISTS "${ORT_INCLUDE_DIR}/coreml_provider_factory.h")
+    file(WRITE "${ORT_INCLUDE_DIR}/coreml_provider_factory.h"
+"// Generated CoreML provider factory header
+#pragma once
+#include \"onnxruntime_c_api.h\"
+
+#ifdef __cplusplus
+extern \"C\" {
+#endif
+
+ORT_EXPORT ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_CoreML,
+                          _In_ OrtSessionOptions* options, uint32_t coreml_flags);
+
+#ifdef __cplusplus
+}
+#endif
+")
+  endif()
+
+  set(ORT_SEARCH_LIB_PATHS
+      "${onnxruntime_prebuilt_SOURCE_DIR}/runtimes/${ORT_PLATFORM}/native"
+      "${onnxruntime_prebuilt_SOURCE_DIR}/lib"
+  )
+
+  if(ORT_LIBRARY AND NOT EXISTS "${ORT_LIBRARY}")
+    unset(ORT_LIBRARY CACHE)
+  endif()
+  if(ORT_DLL AND NOT EXISTS "${ORT_DLL}")
+    unset(ORT_DLL CACHE)
+  endif()
+
   if(WIN32)
     find_file(ORT_DLL
             NAMES onnxruntime.dll
-            PATHS "${onnxruntime_prebuilt_SOURCE_DIR}/lib" "${onnxruntime_prebuilt_SOURCE_DIR}/bin"
+            PATHS ${ORT_SEARCH_LIB_PATHS} "${onnxruntime_prebuilt_SOURCE_DIR}/bin"
             NO_DEFAULT_PATH
             REQUIRED
         )
     find_library(ORT_LIBRARY
             NAMES onnxruntime
-            PATHS "${onnxruntime_prebuilt_SOURCE_DIR}/lib"
+            PATHS ${ORT_SEARCH_LIB_PATHS}
             NO_DEFAULT_PATH
             REQUIRED
         )
   else()
     find_library(ORT_LIBRARY
             NAMES onnxruntime
-            PATHS "${onnxruntime_prebuilt_SOURCE_DIR}/lib"
+            PATHS ${ORT_SEARCH_LIB_PATHS}
             NO_DEFAULT_PATH
             REQUIRED
         )
+    if(EXISTS "${ORT_LIBRARY}")
+      get_filename_component(ORT_NATIVE_DIR "${ORT_LIBRARY}" DIRECTORY)
+      if(APPLE)
+        file(CREATE_LINK
+            "${ORT_LIBRARY}"
+            "${ORT_NATIVE_DIR}/libonnxruntime.${ONNXRUNTIME_VERSION}.dylib"
+            COPY_ON_ERROR
+            SYMBOLIC
+        )
+      else()
+        string(REGEX MATCH "^[0-9]+" ORT_MAJOR_VERSION "${ONNXRUNTIME_VERSION}")
+        file(CREATE_LINK
+            "${ORT_LIBRARY}"
+            "${ORT_NATIVE_DIR}/libonnxruntime.so.${ONNXRUNTIME_VERSION}"
+            COPY_ON_ERROR
+            SYMBOLIC
+        )
+        if(ORT_MAJOR_VERSION)
+          file(CREATE_LINK
+              "${ORT_LIBRARY}"
+              "${ORT_NATIVE_DIR}/libonnxruntime.so.${ORT_MAJOR_VERSION}"
+              COPY_ON_ERROR
+              SYMBOLIC
+          )
+        endif()
+      endif()
+    endif()
   endif()
 endif()
 

@@ -18,6 +18,7 @@
 #include <mutex>
 #include <pyreth/common.hpp>
 #include <pyreth/server/http_server.hpp>
+#include <pyreth/server/protocol.hpp>
 #include <thread>
 #include <utility>
 
@@ -121,6 +122,96 @@ public:
           resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
           Json::Value root;
           root["status"] = "alive";
+          Json::StreamWriterBuilder writer;
+          writer["indentation"] = "";
+          resp->setBody(Json::writeString(writer, root));
+          callback(resp);
+        },
+        {drogon::Get});
+
+    // Register model discovery endpoints (Phase 2)
+    drogon::app().registerHandler(
+        "/v1/models",
+        [this](const drogon::HttpRequestPtr& /*req*/,
+               std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+          auto resp = drogon::HttpResponse::newHttpResponse();
+          resp->setStatusCode(drogon::k200OK);
+          resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+          auto models = registry_.listModels();
+          Json::Value root(Json::arrayValue);
+          for (const auto& m : models) {
+            Json::Value item;
+            item["name"] = m.name;
+            item["version"] = m.version;
+            item["ready"] = (m.state == "ready");
+            root.append(item);
+          }
+          Json::StreamWriterBuilder writer;
+          writer["indentation"] = "";
+          resp->setBody(Json::writeString(writer, root));
+          callback(resp);
+        },
+        {drogon::Get});
+
+    drogon::app().registerHandlerViaRegex(
+        R"(/v1/models/([^/]+))",
+        [this](const drogon::HttpRequestPtr& /*req*/,
+               std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+               std::string model_name) {
+          auto entry_res = registry_.getModelEntry(model_name);
+          if (!entry_res.isOk()) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k404NotFound);
+            resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+            Json::Value err;
+            err["error"] = "Model '" + model_name + "' not found";
+            Json::StreamWriterBuilder writer;
+            writer["indentation"] = "";
+            resp->setBody(Json::writeString(writer, err));
+            callback(resp);
+            return;
+          }
+
+          const auto& entry = entry_res.value();
+          auto resp = drogon::HttpResponse::newHttpResponse();
+          resp->setStatusCode(drogon::k200OK);
+          resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+
+          Json::Value root;
+          root["name"] = entry.name;
+          Json::Value versions(Json::arrayValue);
+          versions.append(entry.version);
+          root["versions"] = versions;
+          root["platform"] = "onnxruntime";
+          root["inputs"] = Json::arrayValue;
+          root["outputs"] = Json::arrayValue;
+
+          if (entry.session) {
+            const auto& info = entry.session->getModelInfo();
+            for (const auto& inp : info.inputs) {
+              Json::Value inp_val;
+              inp_val["name"] = inp.name;
+              inp_val["datatype"] = dataTypeToKServeString(inp.dtype);
+              Json::Value shape_val(Json::arrayValue);
+              for (int64_t d : inp.shape) {
+                shape_val.append(static_cast<Json::Value::Int64>(d));
+              }
+              inp_val["shape"] = shape_val;
+              root["inputs"].append(inp_val);
+            }
+            for (const auto& out : info.outputs) {
+              Json::Value out_val;
+              out_val["name"] = out.name;
+              out_val["datatype"] = dataTypeToKServeString(out.dtype);
+              Json::Value shape_val(Json::arrayValue);
+              for (int64_t d : out.shape) {
+                shape_val.append(static_cast<Json::Value::Int64>(d));
+              }
+              out_val["shape"] = shape_val;
+              root["outputs"].append(out_val);
+            }
+          }
+
           Json::StreamWriterBuilder writer;
           writer["indentation"] = "";
           resp->setBody(Json::writeString(writer, root));
@@ -245,8 +336,29 @@ public:
 
   [[nodiscard]] ThreadPool& threadPool() noexcept { return pool_; }
 
+  [[nodiscard]] Result<void> registerModel(std::string name,
+                                           std::shared_ptr<InferenceSession> session,
+                                           std::string version = "1") {
+    return registry_.registerModel(std::move(name), std::move(session), std::move(version));
+  }
+
+  [[nodiscard]] Result<void> registerBatcher(std::string name,
+                                             std::shared_ptr<DynamicBatcher> batcher) {
+    return registry_.registerBatcher(std::move(name), std::move(batcher));
+  }
+
+  [[nodiscard]] Result<void> unregisterModel(std::string_view name) {
+    return registry_.unregisterModel(name);
+  }
+
+  [[nodiscard]] bool hasModel(std::string_view name) const { return registry_.hasModel(name); }
+
+  [[nodiscard]] ModelRegistry& modelRegistry() noexcept { return registry_; }
+  [[nodiscard]] const ModelRegistry& modelRegistry() const noexcept { return registry_; }
+
   ServerConfig config_;
   ThreadPool pool_;
+  ModelRegistry registry_;
   std::thread server_thread_;
   std::mutex mutex_;
   std::atomic<bool> running_{false};
@@ -290,6 +402,32 @@ const ServerConfig& HttpServer::config() const noexcept {
 
 ThreadPool& HttpServer::threadPool() noexcept {
   return impl_->threadPool();
+}
+
+Result<void> HttpServer::registerModel(std::string name, std::shared_ptr<InferenceSession> session,
+                                       std::string version) {
+  return impl_->registerModel(std::move(name), std::move(session), std::move(version));
+}
+
+Result<void> HttpServer::registerBatcher(std::string name,
+                                         std::shared_ptr<DynamicBatcher> batcher) {
+  return impl_->registerBatcher(std::move(name), std::move(batcher));
+}
+
+Result<void> HttpServer::unregisterModel(std::string_view name) {
+  return impl_->unregisterModel(name);
+}
+
+bool HttpServer::hasModel(std::string_view name) const {
+  return impl_->hasModel(name);
+}
+
+ModelRegistry& HttpServer::modelRegistry() noexcept {
+  return impl_->modelRegistry();
+}
+
+const ModelRegistry& HttpServer::modelRegistry() const noexcept {
+  return impl_->modelRegistry();
 }
 
 }  // namespace pyreth::server

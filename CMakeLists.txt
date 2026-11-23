@@ -11,6 +11,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(WIN32)
+  add_compile_definitions(NOMINMAX)
+endif()
+
 # Position Independent Code (required when static libraries are linked into shared modules on Linux)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -236,6 +240,8 @@ endif()
 # Pyreth Server Target (Static Library)
 add_library(PyrethServer STATIC
     src/server/http_server.cpp
+    src/server/model_registry.cpp
+    src/server/protocol.cpp
 )
 
 set_target_properties(PyrethServer PROPERTIES

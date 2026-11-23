@@ -20,6 +20,7 @@ enum class StatusCode : uint8_t {
   INVALID_ARGUMENT,
   INVALID_DIMENSIONS,
   MODEL_NOT_FOUND,
+  MODEL_ALREADY_EXISTS,
   MODEL_LOAD_FAILED,
   BACKEND_ERROR,
   BACKEND_UNAVAILABLE,
@@ -30,6 +31,31 @@ enum class StatusCode : uint8_t {
   INTERNAL_ERROR,
   UNKNOWN
 };
+
+/**
+ * @enum ErrorCode
+ * @brief Canonical alias enum for StatusCode.
+ */
+enum class ErrorCode : uint8_t {
+  Ok = static_cast<uint8_t>(StatusCode::OK),
+  InvalidArgument = static_cast<uint8_t>(StatusCode::INVALID_ARGUMENT),
+  InvalidDimensions = static_cast<uint8_t>(StatusCode::INVALID_DIMENSIONS),
+  ModelNotFound = static_cast<uint8_t>(StatusCode::MODEL_NOT_FOUND),
+  ModelAlreadyExists = static_cast<uint8_t>(StatusCode::MODEL_ALREADY_EXISTS),
+  ModelLoadFailed = static_cast<uint8_t>(StatusCode::MODEL_LOAD_FAILED),
+  BackendError = static_cast<uint8_t>(StatusCode::BACKEND_ERROR),
+  BackendUnavailable = static_cast<uint8_t>(StatusCode::BACKEND_UNAVAILABLE),
+  QueueFull = static_cast<uint8_t>(StatusCode::QUEUE_FULL),
+  QueueEmpty = static_cast<uint8_t>(StatusCode::QUEUE_EMPTY),
+  AllocationFailed = static_cast<uint8_t>(StatusCode::ALLOCATION_FAILED),
+  Timeout = static_cast<uint8_t>(StatusCode::TIMEOUT),
+  InternalError = static_cast<uint8_t>(StatusCode::INTERNAL_ERROR),
+  Unknown = static_cast<uint8_t>(StatusCode::UNKNOWN)
+};
+
+constexpr bool operator==(StatusCode sc, ErrorCode ec) noexcept {
+  return static_cast<uint8_t>(sc) == static_cast<uint8_t>(ec);
+}
 
 /**
  * @brief Convert a StatusCode to its canonical human-readable string
@@ -45,6 +71,8 @@ enum class StatusCode : uint8_t {
       return "Invalid dimensions";
     case StatusCode::MODEL_NOT_FOUND:
       return "Model not found";
+    case StatusCode::MODEL_ALREADY_EXISTS:
+      return "Model already exists";
     case StatusCode::MODEL_LOAD_FAILED:
       return "Model load failed";
     case StatusCode::BACKEND_ERROR:
@@ -79,6 +107,9 @@ public:
   constexpr Error(StatusCode code, std::string_view message = "") noexcept
       : code_(code), message_(message.empty() ? statusCodeToString(code) : message) {}
 
+  constexpr Error(ErrorCode code, std::string_view message = "") noexcept
+      : Error(static_cast<StatusCode>(code), message) {}
+
   [[nodiscard]] constexpr StatusCode code() const noexcept { return code_; }
   [[nodiscard]] constexpr std::string_view message() const noexcept { return message_; }
   [[nodiscard]] constexpr bool isOk() const noexcept { return code_ == StatusCode::OK; }
@@ -93,6 +124,9 @@ public:
   }
   static constexpr Error modelNotFound(std::string_view msg = "") noexcept {
     return Error(StatusCode::MODEL_NOT_FOUND, msg);
+  }
+  static constexpr Error modelAlreadyExists(std::string_view msg = "") noexcept {
+    return Error(StatusCode::MODEL_ALREADY_EXISTS, msg);
   }
   static constexpr Error modelLoadFailed(std::string_view msg = "") noexcept {
     return Error(StatusCode::MODEL_LOAD_FAILED, msg);
@@ -128,6 +162,10 @@ public:
   constexpr bool operator!=(const Error& other) const noexcept { return !(*this == other); }
   constexpr bool operator==(StatusCode sc) const noexcept { return code_ == sc; }
   constexpr bool operator!=(StatusCode sc) const noexcept { return code_ != sc; }
+  constexpr bool operator==(ErrorCode ec) const noexcept {
+    return static_cast<uint8_t>(code_) == static_cast<uint8_t>(ec);
+  }
+  constexpr bool operator!=(ErrorCode ec) const noexcept { return !(*this == ec); }
 
 private:
   StatusCode code_{StatusCode::OK};
@@ -156,8 +194,10 @@ public:
       : error_(std::move(err)) {}
 
   template <typename S>
-    requires std::is_same_v<std::decay_t<S>, StatusCode> && std::is_constructible_v<E, S>
-  constexpr Result(S code) : error_(E(code)) {}
+    requires(std::is_same_v<std::decay_t<S>, StatusCode> ||
+             std::is_same_v<std::decay_t<S>, ErrorCode>) &&
+            std::is_constructible_v<E, StatusCode>
+  constexpr Result(S code) : error_(E(static_cast<StatusCode>(code))) {}
 
   static constexpr Result success() noexcept { return Result(); }
 
@@ -281,8 +321,10 @@ public:
       : storage_(std::in_place_index<1>, std::move(err)) {}
 
   template <typename S>
-    requires std::is_same_v<std::decay_t<S>, StatusCode> && std::is_constructible_v<E, S>
-  constexpr Result(S code) : storage_(std::in_place_index<1>, E(code)) {}
+    requires(std::is_same_v<std::decay_t<S>, StatusCode> ||
+             std::is_same_v<std::decay_t<S>, ErrorCode>) &&
+            std::is_constructible_v<E, StatusCode>
+  constexpr Result(S code) : storage_(std::in_place_index<1>, E(static_cast<StatusCode>(code))) {}
 
   template <typename... Args>
   static constexpr Result success(Args&&... args) {
