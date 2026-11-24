@@ -3,11 +3,14 @@
 #include <cstdint>
 #include <memory>
 #include <pyreth/common.hpp>
+#include <pyreth/memory_pool.hpp>
 #include <pyreth/result.hpp>
+#include <pyreth/server/execution_mode.hpp>
 #include <pyreth/server/model_registry.hpp>
 #include <pyreth/server/server_config.hpp>
 #include <pyreth/thread_pool.hpp>
 #include <string>
+#include <string_view>
 
 namespace pyreth::server {
 
@@ -35,6 +38,8 @@ public:
   [[nodiscard]] const std::string& host() const noexcept;
   [[nodiscard]] const ServerConfig& config() const noexcept;
   [[nodiscard]] ThreadPool& threadPool() noexcept;
+  [[nodiscard]] MemoryPool& memoryPool() noexcept;
+  [[nodiscard]] const MemoryPool& memoryPool() const noexcept;
 
   [[nodiscard]] Result<void> registerModel(std::string name,
                                            std::shared_ptr<InferenceSession> session,

@@ -13,21 +13,30 @@
 #endif
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <pyreth/common.hpp>
+#include <pyreth/memory_pool.hpp>
+#include <pyreth/server/execution_mode.hpp>
 #include <pyreth/server/http_server.hpp>
 #include <pyreth/server/protocol.hpp>
+#include <sstream>
+#include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace pyreth::server {
 
 class HttpServer::Impl {
 public:
   explicit Impl(const ServerConfig& config)
-      : config_(config), pool_(config.io_threads > 0 ? config.io_threads : 1) {}
+      : config_(config),
+        pool_(std::make_unique<ThreadPool>(config.io_threads > 0 ? config.io_threads : 1)),
+        memory_pool_(16, 2 * 1024 * 1024) {}
 
   ~Impl() { stop(); }
 
@@ -40,6 +49,10 @@ public:
     std::lock_guard<std::mutex> lock(mutex_);
     if (running_.load()) {
       return Result<void>::failure(StatusCode::INTERNAL_ERROR, "Server is already running");
+    }
+
+    if (!pool_ || pool_->isShutdown()) {
+      pool_ = std::make_unique<ThreadPool>(config_.io_threads > 0 ? config_.io_threads : 1);
     }
 
     // Configure Drogon
@@ -219,6 +232,26 @@ public:
         },
         {drogon::Get});
 
+    // Register inference endpoints (Phase 3)
+    drogon::app().registerHandlerViaRegex(
+        R"(/v1/models/([^/]+)/infer)",
+        [this](const drogon::HttpRequestPtr& req,
+               std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+               std::string model_name) {
+          handleInferRequest(req, std::move(callback), std::move(model_name), "");
+        },
+        {drogon::Post});
+
+    drogon::app().registerHandlerViaRegex(
+        R"(/v1/models/([^/]+)/versions/([^/]+)/infer)",
+        [this](const drogon::HttpRequestPtr& req,
+               std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+               std::string model_name, std::string model_version) {
+          handleInferRequest(req, std::move(callback), std::move(model_name),
+                             std::move(model_version));
+        },
+        {drogon::Post});
+
     if (config_.enable_cors) {
       drogon::app().registerPreRoutingAdvice([](const drogon::HttpRequestPtr& req,
                                                 drogon::AdviceCallback&& acb,
@@ -312,6 +345,9 @@ public:
     if (!running_.exchange(false)) {
       return;
     }
+    if (pool_) {
+      pool_->shutdown();
+    }
     if (drogon::app().isRunning()) {
       drogon::app().quit();
     }
@@ -334,7 +370,11 @@ public:
 
   [[nodiscard]] const ServerConfig& config() const noexcept { return config_; }
 
-  [[nodiscard]] ThreadPool& threadPool() noexcept { return pool_; }
+  [[nodiscard]] ThreadPool& threadPool() noexcept { return *pool_; }
+
+  [[nodiscard]] MemoryPool& memoryPool() noexcept { return memory_pool_; }
+
+  [[nodiscard]] const MemoryPool& memoryPool() const noexcept { return memory_pool_; }
 
   [[nodiscard]] Result<void> registerModel(std::string name,
                                            std::shared_ptr<InferenceSession> session,
@@ -356,8 +396,284 @@ public:
   [[nodiscard]] ModelRegistry& modelRegistry() noexcept { return registry_; }
   [[nodiscard]] const ModelRegistry& modelRegistry() const noexcept { return registry_; }
 
+private:
+  void handleInferRequest(const drogon::HttpRequestPtr& req,
+                          std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                          std::string model_name, std::string model_version) {
+    auto entry_res = registry_.getModelEntry(model_name);
+    if (!entry_res.isOk()) {
+      auto resp = drogon::HttpResponse::newHttpResponse();
+      resp->setStatusCode(drogon::k404NotFound);
+      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      Json::Value err;
+      err["error"] = "Model '" + model_name + "' not found";
+      Json::StreamWriterBuilder writer;
+      writer["indentation"] = "";
+      resp->setBody(Json::writeString(writer, err));
+      callback(resp);
+      return;
+    }
+
+    const auto& entry = entry_res.value();
+    if (!entry.session || entry.state != "ready") {
+      auto resp = drogon::HttpResponse::newHttpResponse();
+      resp->setStatusCode(drogon::k503ServiceUnavailable);
+      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      Json::Value err;
+      err["error"] = "Model '" + model_name + "' is not ready";
+      Json::StreamWriterBuilder writer;
+      writer["indentation"] = "";
+      resp->setBody(Json::writeString(writer, err));
+      callback(resp);
+      return;
+    }
+
+    std::string active_version = !model_version.empty() ? model_version : entry.version;
+    std::shared_ptr<InferenceSession> session = entry.session;
+
+    ExecutionMode mode = ExecutionMode::Async;
+    std::string mode_str = req->getHeader("x-pyreth-execution-mode");
+    if (mode_str.empty()) {
+      mode_str = req->getHeader("X-Pyreth-Execution-Mode");
+    }
+    if (!mode_str.empty()) {
+      auto mode_res = stringToExecutionMode(mode_str);
+      if (!mode_res.isOk()) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k400BadRequest);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        Json::Value err;
+        err["error"] = std::string(mode_res.error().message());
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+        resp->setBody(Json::writeString(writer, err));
+        callback(resp);
+        return;
+      }
+      mode = mode_res.value();
+    }
+
+    if (mode == ExecutionMode::DynamicBatching) {
+      auto resp = drogon::HttpResponse::newHttpResponse();
+      resp->setStatusCode(drogon::k501NotImplemented);
+      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      Json::Value err;
+      err["error"] = "Dynamic batching execution mode is not supported in Phase 3";
+      Json::StreamWriterBuilder writer;
+      writer["indentation"] = "";
+      resp->setBody(Json::writeString(writer, err));
+      callback(resp);
+      return;
+    }
+
+    int64_t simulated_delay_ms = 0;
+    std::string delay_str = req->getHeader("x-pyreth-simulated-delay-ms");
+    if (delay_str.empty()) {
+      delay_str = req->getHeader("X-Pyreth-Simulated-Delay-Ms");
+    }
+    if (delay_str.empty()) {
+      delay_str = req->getHeader("x-simulated-delay-ms");
+    }
+    if (delay_str.empty()) {
+      delay_str = req->getHeader("X-Simulated-Delay-Ms");
+    }
+    if (!delay_str.empty()) {
+      try {
+        simulated_delay_ms = std::stoll(delay_str);
+      } catch (...) {}
+    }
+
+    std::string body = std::string(req->body());
+
+    auto execute_inference =
+        [this, session, m_name = std::move(model_name), ver = std::move(active_version),
+         body = std::move(body), mode, simulated_delay_ms](
+            const std::shared_ptr<std::atomic<bool>>& cancelled) -> drogon::HttpResponsePtr {
+      if (cancelled && cancelled->load(std::memory_order_acquire)) {
+        return nullptr;
+      }
+
+      if (simulated_delay_ms > 0) {
+        auto start_wait = std::chrono::steady_clock::now();
+        while (std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now() - start_wait)
+                   .count() < simulated_delay_ms) {
+          if (cancelled && cancelled->load(std::memory_order_acquire)) {
+            return nullptr;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+      }
+
+      if (cancelled && cancelled->load(std::memory_order_acquire)) {
+        return nullptr;
+      }
+
+      auto lease = memory_pool_.acquire();
+      ArenaAllocator& arena = lease.get();
+
+      auto req_res = parseKServeRequest(body, arena);
+      if (!req_res.isOk()) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k400BadRequest);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        Json::Value err;
+        err["error"] = std::string(req_res.error().message());
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+        resp->setBody(Json::writeString(writer, err));
+        return resp;
+      }
+
+      auto tensors = req_res.value().extractTensors();
+      auto val_status = session->validateInputs(tensors);
+      if (!val_status.isOk()) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k400BadRequest);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        Json::Value err;
+        err["error"] = std::string(val_status.error().message());
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+        resp->setBody(Json::writeString(writer, err));
+        return resp;
+      }
+
+      if (cancelled && cancelled->load(std::memory_order_acquire)) {
+        return nullptr;
+      }
+
+      auto run_res = session->run(tensors);
+      if (!run_res.isOk()) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k500InternalServerError);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        Json::Value err;
+        err["error"] = std::string(run_res.error().message());
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+        resp->setBody(Json::writeString(writer, err));
+        return resp;
+      }
+
+      auto output_names = session->getOutputNames();
+      auto ser_res = serializeKServeResponse(m_name, output_names, run_res.value(), ver);
+      if (!ser_res.isOk()) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k500InternalServerError);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        Json::Value err;
+        err["error"] = std::string(ser_res.error().message());
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+        resp->setBody(Json::writeString(writer, err));
+        return resp;
+      }
+
+      auto resp = drogon::HttpResponse::newHttpResponse();
+      resp->setStatusCode(drogon::k200OK);
+      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      resp->setBody(std::move(ser_res.value()));
+      resp->addHeader("X-Pyreth-Execution-Mode", std::string(executionModeToString(mode)));
+
+      std::ostringstream ss;
+      ss << std::this_thread::get_id();
+      resp->addHeader("X-Pyreth-Worker-Thread-Id", ss.str());
+
+      return resp;
+    };
+
+    if (mode == ExecutionMode::Sync) {
+      if (config_.request_timeout_ms > 0 && simulated_delay_ms > config_.request_timeout_ms) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(config_.request_timeout_ms));
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k504GatewayTimeout);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        Json::Value err;
+        err["error"] = "Request execution timed out";
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+        resp->setBody(Json::writeString(writer, err));
+        callback(resp);
+        return;
+      }
+
+      auto resp = execute_inference(nullptr);
+      if (resp) {
+        callback(resp);
+      }
+      return;
+    }
+
+    auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    auto responded = std::make_shared<std::atomic<bool>>(false);
+    auto cb =
+        std::make_shared<std::function<void(const drogon::HttpResponsePtr&)>>(std::move(callback));
+
+    trantor::TimerId timer_id{};
+    auto loop = drogon::app().getLoop();
+    if (config_.request_timeout_ms > 0 && loop) {
+      double delay_sec = static_cast<double>(config_.request_timeout_ms) / 1000.0;
+      timer_id = loop->runAfter(delay_sec, [cb, responded, cancelled]() {
+        cancelled->store(true, std::memory_order_release);
+        if (!responded->exchange(true, std::memory_order_acq_rel)) {
+          auto resp = drogon::HttpResponse::newHttpResponse();
+          resp->setStatusCode(drogon::k504GatewayTimeout);
+          resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+          Json::Value err;
+          err["error"] = "Request execution timed out";
+          Json::StreamWriterBuilder writer;
+          writer["indentation"] = "";
+          resp->setBody(Json::writeString(writer, err));
+          (*cb)(resp);
+        }
+      });
+    }
+
+    auto submit_res = pool_->submit([this, execute_inference, cancelled, responded, cb, timer_id,
+                                     loop]() {
+      if (cancelled->load(std::memory_order_acquire) || !running_.load(std::memory_order_acquire)) {
+        return;
+      }
+
+      auto resp = execute_inference(cancelled);
+      if (!resp) {
+        return;
+      }
+
+      if (!running_.load(std::memory_order_acquire)) {
+        return;
+      }
+
+      if (!responded->exchange(true, std::memory_order_acq_rel)) {
+        if (timer_id != trantor::TimerId{} && loop) {
+          loop->invalidateTimer(timer_id);
+        }
+        (*cb)(resp);
+      }
+    });
+
+    if (!submit_res.isOk()) {
+      if (timer_id != trantor::TimerId{} && loop) {
+        loop->invalidateTimer(timer_id);
+      }
+      if (!responded->exchange(true, std::memory_order_acq_rel)) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k503ServiceUnavailable);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        Json::Value err;
+        err["error"] = std::string(submit_res.error().message());
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+        resp->setBody(Json::writeString(writer, err));
+        (*cb)(resp);
+      }
+    }
+  }
+
   ServerConfig config_;
-  ThreadPool pool_;
+  std::unique_ptr<ThreadPool> pool_;
+  MemoryPool memory_pool_;
   ModelRegistry registry_;
   std::thread server_thread_;
   std::mutex mutex_;
@@ -402,6 +718,14 @@ const ServerConfig& HttpServer::config() const noexcept {
 
 ThreadPool& HttpServer::threadPool() noexcept {
   return impl_->threadPool();
+}
+
+MemoryPool& HttpServer::memoryPool() noexcept {
+  return impl_->memoryPool();
+}
+
+const MemoryPool& HttpServer::memoryPool() const noexcept {
+  return impl_->memoryPool();
 }
 
 Result<void> HttpServer::registerModel(std::string name, std::shared_ptr<InferenceSession> session,
