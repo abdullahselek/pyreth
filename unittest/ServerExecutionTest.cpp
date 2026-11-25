@@ -105,10 +105,10 @@ std::string toLower(std::string_view s) {
 HttpResponse sendHttpRequest(
     const std::string& host, uint16_t port, const std::string& method, const std::string& path,
     const std::unordered_map<std::string, std::string>& custom_headers = {},
-    const std::string& body = "", int timeout_sec = 15, int retries = 3) {
+    const std::string& body = "", int timeout_sec = 15, int retries = 5) {
   for (int attempt = 0; attempt <= retries; ++attempt) {
     if (attempt > 0) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      std::this_thread::sleep_for(std::chrono::milliseconds(25 * attempt));
     }
 
     std::string target_ip = (host == "0.0.0.0" || host.empty()) ? "127.0.0.1" : host;
@@ -119,7 +119,7 @@ HttpResponse sendHttpRequest(
 
     socket_t sock = kInvalidSocket;
     bool connected = false;
-    for (int conn_try = 0; conn_try < 50; ++conn_try) {
+    for (int conn_try = 0; conn_try < 100; ++conn_try) {
       sock = ::socket(AF_INET, SOCK_STREAM, 0);
       if (!isValidSocket(sock)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -144,7 +144,7 @@ HttpResponse sendHttpRequest(
       }
       closeSocket(sock);
       sock = kInvalidSocket;
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      std::this_thread::sleep_for(std::chrono::milliseconds(15));
     }
     if (!connected || !isValidSocket(sock)) {
       continue;
@@ -188,6 +188,9 @@ HttpResponse sendHttpRequest(
 
     std::string response_str;
     char buf[4096];
+    size_t expected_len = 0;
+    bool has_content_length = false;
+
     while (true) {
 #ifdef _WIN32
       int n = ::recv(sock, buf, static_cast<int>(sizeof(buf)), 0);
@@ -204,38 +207,51 @@ HttpResponse sendHttpRequest(
 
       auto header_end = response_str.find("\r\n\r\n");
       if (header_end != std::string::npos) {
-        auto lower_resp = toLower(response_str.substr(0, header_end));
-        auto cl_pos = lower_resp.find("content-length:");
-        if (cl_pos != std::string::npos) {
-          auto val_start = cl_pos + 15;
-          auto line_end = lower_resp.find("\r\n", val_start);
-          if (line_end != std::string::npos) {
-            std::string cl_str = lower_resp.substr(val_start, line_end - val_start);
-            while (!cl_str.empty() && (cl_str.front() == ' ' || cl_str.front() == '\t')) {
-              cl_str.erase(0, 1);
-            }
-            try {
-              size_t expected_len = std::stoull(cl_str);
-              size_t body_len = response_str.size() - (header_end + 4);
-              if (body_len >= expected_len) {
-                break;
+        if (!has_content_length) {
+          auto lower_resp = toLower(response_str.substr(0, header_end));
+          auto cl_pos = lower_resp.find("content-length:");
+          if (cl_pos != std::string::npos) {
+            auto val_start = cl_pos + 15;
+            auto line_end = lower_resp.find("\r\n", val_start);
+            if (line_end != std::string::npos) {
+              std::string cl_str = lower_resp.substr(val_start, line_end - val_start);
+              while (!cl_str.empty() && (cl_str.front() == ' ' || cl_str.front() == '\t')) {
+                cl_str.erase(0, 1);
               }
-            } catch (...) {}
+              try {
+                expected_len = std::stoull(cl_str);
+                has_content_length = true;
+              } catch (...) {}
+            }
+          }
+        }
+        if (has_content_length) {
+          size_t body_len = response_str.size() - (header_end + 4);
+          if (body_len >= expected_len) {
+            break;
           }
         }
       }
     }
     closeSocket(sock);
 
-    HttpResponse resp;
     auto header_end = response_str.find("\r\n\r\n");
     if (header_end == std::string::npos) {
       if (attempt < retries) {
         continue;
       }
-      return resp;
+      return {};
     }
 
+    size_t body_len = response_str.size() - (header_end + 4);
+    if (has_content_length && body_len < expected_len) {
+      if (attempt < retries) {
+        continue;
+      }
+      return {};
+    }
+
+    HttpResponse resp;
     resp.body = response_str.substr(header_end + 4);
     std::string header_part = response_str.substr(0, header_end);
 
@@ -272,6 +288,11 @@ HttpResponse sendHttpRequest(
         resp.headers[toLower(k)] = v;
         resp.headers[k] = v;
       }
+    }
+
+    // Under high concurrency load, if server was temporarily busy (503), retry!
+    if (resp.status_code == 503 && attempt < retries) {
+      continue;
     }
 
     if (resp.status_code > 0) {
