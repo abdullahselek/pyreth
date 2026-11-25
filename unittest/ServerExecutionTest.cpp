@@ -40,11 +40,12 @@ namespace {
 
 #ifdef _WIN32
 using socket_t = SOCKET;
+inline constexpr socket_t kInvalidSocket = INVALID_SOCKET;
 inline int closeSocket(socket_t s) {
   return ::closesocket(s);
 }
 inline bool isValidSocket(socket_t s) {
-  return s != INVALID_SOCKET;
+  return s != kInvalidSocket;
 }
 
 class WinsockScope {
@@ -58,6 +59,7 @@ public:
 static WinsockScope g_winsock_scope;
 #else
 using socket_t = int;
+inline constexpr socket_t kInvalidSocket = -1;
 inline int closeSocket(socket_t s) {
   return ::close(s);
 }
@@ -103,145 +105,181 @@ std::string toLower(std::string_view s) {
 HttpResponse sendHttpRequest(
     const std::string& host, uint16_t port, const std::string& method, const std::string& path,
     const std::unordered_map<std::string, std::string>& custom_headers = {},
-    const std::string& body = "", int timeout_sec = 5) {
-  std::string target_ip = (host == "0.0.0.0" || host.empty()) ? "127.0.0.1" : host;
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  ::inet_pton(AF_INET, target_ip.c_str(), &addr.sin_addr);
+    const std::string& body = "", int timeout_sec = 15, int retries = 3) {
+  for (int attempt = 0; attempt <= retries; ++attempt) {
+    if (attempt > 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
 
-  socket_t sock;
-  bool connected = false;
-  for (int attempt = 0; attempt < 50; ++attempt) {
-    sock = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (!isValidSocket(sock)) {
+    std::string target_ip = (host == "0.0.0.0" || host.empty()) ? "127.0.0.1" : host;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    ::inet_pton(AF_INET, target_ip.c_str(), &addr.sin_addr);
+
+    socket_t sock = kInvalidSocket;
+    bool connected = false;
+    for (int conn_try = 0; conn_try < 50; ++conn_try) {
+      sock = ::socket(AF_INET, SOCK_STREAM, 0);
+      if (!isValidSocket(sock)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        continue;
+      }
+#ifdef _WIN32
+      DWORD timeout_ms = static_cast<DWORD>(timeout_sec * 1000);
+      ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms),
+                   sizeof(timeout_ms));
+      ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms),
+                   sizeof(timeout_ms));
+#else
+      struct timeval tv{};
+      tv.tv_sec = timeout_sec;
+      tv.tv_usec = 0;
+      ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+      ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+      if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+        connected = true;
+        break;
+      }
+      closeSocket(sock);
+      sock = kInvalidSocket;
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (!connected || !isValidSocket(sock)) {
       continue;
     }
-#ifdef _WIN32
-    DWORD timeout_ms = static_cast<DWORD>(timeout_sec * 1000);
-    ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms),
-                 sizeof(timeout_ms));
-    ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms),
-                 sizeof(timeout_ms));
-#else
-    struct timeval tv{};
-    tv.tv_sec = timeout_sec;
-    tv.tv_usec = 0;
-    ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-#endif
-    if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
-      connected = true;
-      break;
+
+    std::string req = method + " " + path + " HTTP/1.1\r\n";
+    req += "Host: " + target_ip + ":" + std::to_string(port) + "\r\n";
+    req += "Connection: close\r\n";
+    if (!body.empty() || method == "POST" || method == "PUT") {
+      req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     }
-    closeSocket(sock);
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  if (!connected) {
-    return {};
-  }
-
-  std::string req = method + " " + path + " HTTP/1.1\r\n";
-  req += "Host: " + target_ip + ":" + std::to_string(port) + "\r\n";
-  req += "Connection: close\r\n";
-  if (!body.empty() || method == "POST" || method == "PUT") {
-    req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-  }
-  for (const auto& [k, v] : custom_headers) {
-    req += k + ": " + v + "\r\n";
-  }
-  req += "\r\n";
-  if (!body.empty()) {
-    req += body;
-  }
-
-  ::send(sock, req.data(), static_cast<int>(req.size()), 0);
-
-  std::string response_str;
-  char buf[4096];
-  while (true) {
-#ifdef _WIN32
-    int n = ::recv(sock, buf, static_cast<int>(sizeof(buf)), 0);
-#else
-    ssize_t n = ::recv(sock, buf, sizeof(buf), 0);
-#endif
-    if (n <= 0) {
-      break;
+    for (const auto& [k, v] : custom_headers) {
+      req += k + ": " + v + "\r\n";
     }
-    response_str.append(buf, static_cast<size_t>(n));
+    req += "\r\n";
+    if (!body.empty()) {
+      req += body;
+    }
 
-    auto header_end = response_str.find("\r\n\r\n");
-    if (header_end != std::string::npos) {
-      auto cl_pos = response_str.find("content-length:");
-      if (cl_pos == std::string::npos) {
-        cl_pos = response_str.find("Content-Length:");
+    size_t total_sent = 0;
+    bool send_ok = true;
+    while (total_sent < req.size()) {
+#ifdef _WIN32
+      int n = ::send(sock, req.data() + total_sent, static_cast<int>(req.size() - total_sent), 0);
+#else
+      ssize_t n = ::send(sock, req.data() + total_sent, req.size() - total_sent, 0);
+#endif
+      if (n <= 0) {
+        if (n < 0 && errno == EINTR) {
+          continue;
+        }
+        send_ok = false;
+        break;
       }
-      if (cl_pos != std::string::npos && cl_pos < header_end) {
-        auto val_start = cl_pos + 15;
-        auto line_end = response_str.find("\r\n", val_start);
-        if (line_end != std::string::npos) {
-          std::string cl_str = response_str.substr(val_start, line_end - val_start);
-          while (!cl_str.empty() && (cl_str.front() == ' ' || cl_str.front() == '\t')) {
-            cl_str.erase(0, 1);
-          }
-          try {
-            size_t expected_len = std::stoull(cl_str);
-            size_t body_len = response_str.size() - (header_end + 4);
-            if (body_len >= expected_len) {
-              break;
+      total_sent += static_cast<size_t>(n);
+    }
+    if (!send_ok || total_sent < req.size()) {
+      closeSocket(sock);
+      continue;
+    }
+
+    std::string response_str;
+    char buf[4096];
+    while (true) {
+#ifdef _WIN32
+      int n = ::recv(sock, buf, static_cast<int>(sizeof(buf)), 0);
+#else
+      ssize_t n = ::recv(sock, buf, sizeof(buf), 0);
+#endif
+      if (n <= 0) {
+        if (n < 0 && errno == EINTR) {
+          continue;
+        }
+        break;
+      }
+      response_str.append(buf, static_cast<size_t>(n));
+
+      auto header_end = response_str.find("\r\n\r\n");
+      if (header_end != std::string::npos) {
+        auto lower_resp = toLower(response_str.substr(0, header_end));
+        auto cl_pos = lower_resp.find("content-length:");
+        if (cl_pos != std::string::npos) {
+          auto val_start = cl_pos + 15;
+          auto line_end = lower_resp.find("\r\n", val_start);
+          if (line_end != std::string::npos) {
+            std::string cl_str = lower_resp.substr(val_start, line_end - val_start);
+            while (!cl_str.empty() && (cl_str.front() == ' ' || cl_str.front() == '\t')) {
+              cl_str.erase(0, 1);
             }
-          } catch (...) {}
+            try {
+              size_t expected_len = std::stoull(cl_str);
+              size_t body_len = response_str.size() - (header_end + 4);
+              if (body_len >= expected_len) {
+                break;
+              }
+            } catch (...) {}
+          }
         }
       }
     }
-  }
-  closeSocket(sock);
+    closeSocket(sock);
 
-  HttpResponse resp;
-  auto header_end = response_str.find("\r\n\r\n");
-  if (header_end == std::string::npos) {
-    return resp;
-  }
-
-  resp.body = response_str.substr(header_end + 4);
-  std::string header_part = response_str.substr(0, header_end);
-
-  auto first_line_end = header_part.find("\r\n");
-  std::string status_line =
-      (first_line_end != std::string::npos) ? header_part.substr(0, first_line_end) : header_part;
-  auto first_space = status_line.find(' ');
-  if (first_space != std::string::npos) {
-    auto second_space = status_line.find(' ', first_space + 1);
-    std::string code_str = (second_space != std::string::npos)
-                               ? status_line.substr(first_space + 1, second_space - first_space - 1)
-                               : status_line.substr(first_space + 1);
-    try {
-      resp.status_code = std::stoi(code_str);
-    } catch (...) {
-      resp.status_code = 0;
-    }
-  }
-
-  size_t cur = (first_line_end != std::string::npos) ? first_line_end + 2 : std::string::npos;
-  while (cur != std::string::npos && cur < header_part.size()) {
-    auto next = header_part.find("\r\n", cur);
-    std::string line =
-        (next != std::string::npos) ? header_part.substr(cur, next - cur) : header_part.substr(cur);
-    cur = (next != std::string::npos) ? next + 2 : std::string::npos;
-    auto colon = line.find(':');
-    if (colon != std::string::npos) {
-      std::string k = line.substr(0, colon);
-      std::string v = line.substr(colon + 1);
-      while (!v.empty() && (v.front() == ' ' || v.front() == '\t')) {
-        v.erase(0, 1);
+    HttpResponse resp;
+    auto header_end = response_str.find("\r\n\r\n");
+    if (header_end == std::string::npos) {
+      if (attempt < retries) {
+        continue;
       }
-      resp.headers[toLower(k)] = v;
-      resp.headers[k] = v;
+      return resp;
+    }
+
+    resp.body = response_str.substr(header_end + 4);
+    std::string header_part = response_str.substr(0, header_end);
+
+    auto first_line_end = header_part.find("\r\n");
+    std::string status_line =
+        (first_line_end != std::string::npos) ? header_part.substr(0, first_line_end) : header_part;
+    auto first_space = status_line.find(' ');
+    if (first_space != std::string::npos) {
+      auto second_space = status_line.find(' ', first_space + 1);
+      std::string code_str =
+          (second_space != std::string::npos)
+              ? status_line.substr(first_space + 1, second_space - first_space - 1)
+              : status_line.substr(first_space + 1);
+      try {
+        resp.status_code = std::stoi(code_str);
+      } catch (...) {
+        resp.status_code = 0;
+      }
+    }
+
+    size_t cur = (first_line_end != std::string::npos) ? first_line_end + 2 : std::string::npos;
+    while (cur != std::string::npos && cur < header_part.size()) {
+      auto next = header_part.find("\r\n", cur);
+      std::string line = (next != std::string::npos) ? header_part.substr(cur, next - cur)
+                                                     : header_part.substr(cur);
+      cur = (next != std::string::npos) ? next + 2 : std::string::npos;
+      auto colon = line.find(':');
+      if (colon != std::string::npos) {
+        std::string k = line.substr(0, colon);
+        std::string v = line.substr(colon + 1);
+        while (!v.empty() && (v.front() == ' ' || v.front() == '\t')) {
+          v.erase(0, 1);
+        }
+        resp.headers[toLower(k)] = v;
+        resp.headers[k] = v;
+      }
+    }
+
+    if (resp.status_code > 0) {
+      return resp;
     }
   }
 
-  return resp;
+  return {};
 }
 
 std::string makeInferJson(float v0, float v1) {
@@ -539,7 +577,7 @@ TEST(ServerExecutionTest, GracefulShutdownWithPendingTasks) {
                       {{"Content-Type", "application/json"},
                        {"X-Pyreth-Execution-Mode", "async"},
                        {"X-Pyreth-Simulated-Delay-Ms", "500"}},
-                      body, 1);
+                      body, 5, 0);
     });
   }
 

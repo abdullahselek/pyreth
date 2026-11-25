@@ -58,6 +58,8 @@ public:
     // Configure Drogon
     uint16_t listen_port = static_cast<uint16_t>(config_.port);
     if (listen_port == 0) {
+      std::string bind_ip =
+          (config_.host == "0.0.0.0" || config_.host.empty()) ? "127.0.0.1" : config_.host;
 #ifdef _WIN32
       SOCKET probe_sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
       if (probe_sock != INVALID_SOCKET) {
@@ -66,7 +68,7 @@ public:
                      sizeof(opt));
         sockaddr_in probe_addr{};
         probe_addr.sin_family = AF_INET;
-        probe_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        ::inet_pton(AF_INET, bind_ip.c_str(), &probe_addr.sin_addr);
         probe_addr.sin_port = 0;
         if (::bind(probe_sock, reinterpret_cast<sockaddr*>(&probe_addr), sizeof(probe_addr)) == 0) {
           int len = sizeof(probe_addr);
@@ -86,7 +88,7 @@ public:
 #endif
         sockaddr_in probe_addr{};
         probe_addr.sin_family = AF_INET;
-        probe_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        ::inet_pton(AF_INET, bind_ip.c_str(), &probe_addr.sin_addr);
         probe_addr.sin_port = 0;
         if (::bind(probe_sock, reinterpret_cast<sockaddr*>(&probe_addr), sizeof(probe_addr)) == 0) {
           socklen_t len = sizeof(probe_addr);
@@ -325,6 +327,7 @@ public:
 #endif
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     return Result<void>::success();
   }
@@ -489,7 +492,8 @@ private:
         [this, session, m_name = std::move(model_name), ver = std::move(active_version),
          body = std::move(body), mode, simulated_delay_ms](
             const std::shared_ptr<std::atomic<bool>>& cancelled) -> drogon::HttpResponsePtr {
-      if (cancelled && cancelled->load(std::memory_order_acquire)) {
+      if ((cancelled && cancelled->load(std::memory_order_acquire)) ||
+          !running_.load(std::memory_order_acquire)) {
         return nullptr;
       }
 
@@ -498,14 +502,16 @@ private:
         while (std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::steady_clock::now() - start_wait)
                    .count() < simulated_delay_ms) {
-          if (cancelled && cancelled->load(std::memory_order_acquire)) {
+          if ((cancelled && cancelled->load(std::memory_order_acquire)) ||
+              !running_.load(std::memory_order_acquire)) {
             return nullptr;
           }
           std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
       }
 
-      if (cancelled && cancelled->load(std::memory_order_acquire)) {
+      if ((cancelled && cancelled->load(std::memory_order_acquire)) ||
+          !running_.load(std::memory_order_acquire)) {
         return nullptr;
       }
 
@@ -539,7 +545,8 @@ private:
         return resp;
       }
 
-      if (cancelled && cancelled->load(std::memory_order_acquire)) {
+      if ((cancelled && cancelled->load(std::memory_order_acquire)) ||
+          !running_.load(std::memory_order_acquire)) {
         return nullptr;
       }
 
@@ -633,15 +640,40 @@ private:
     auto submit_res = pool_->submit([this, execute_inference, cancelled, responded, cb, timer_id,
                                      loop]() {
       if (cancelled->load(std::memory_order_acquire) || !running_.load(std::memory_order_acquire)) {
+        if (!responded->exchange(true, std::memory_order_acq_rel)) {
+          if (timer_id != trantor::TimerId{} && loop) {
+            loop->invalidateTimer(timer_id);
+          }
+          auto resp = drogon::HttpResponse::newHttpResponse();
+          resp->setStatusCode(drogon::k503ServiceUnavailable);
+          resp->setCloseConnection(true);
+          (*cb)(resp);
+        }
         return;
       }
 
       auto resp = execute_inference(cancelled);
       if (!resp) {
+        if (!responded->exchange(true, std::memory_order_acq_rel)) {
+          if (timer_id != trantor::TimerId{} && loop) {
+            loop->invalidateTimer(timer_id);
+          }
+          auto err_resp = drogon::HttpResponse::newHttpResponse();
+          err_resp->setStatusCode(drogon::k503ServiceUnavailable);
+          err_resp->setCloseConnection(true);
+          (*cb)(err_resp);
+        }
         return;
       }
 
       if (!running_.load(std::memory_order_acquire)) {
+        if (!responded->exchange(true, std::memory_order_acq_rel)) {
+          if (timer_id != trantor::TimerId{} && loop) {
+            loop->invalidateTimer(timer_id);
+          }
+          resp->setCloseConnection(true);
+          (*cb)(resp);
+        }
         return;
       }
 
