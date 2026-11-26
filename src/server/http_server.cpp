@@ -281,19 +281,20 @@ public:
     auto port_future = port_promise.get_future();
 
     drogon::app().registerBeginningAdvice([this, &port_promise, listen_port]() {
+      uint16_t actual_port = listen_port;
       auto listeners = drogon::app().getListeners();
       if (!listeners.empty() && listeners[0].toPort() != 0) {
-        bound_port_ = listeners[0].toPort();
-      } else {
-        bound_port_ = listen_port;
+        actual_port = listeners[0].toPort();
       }
-      port_promise.set_value(bound_port_);
+      bound_port_.store(actual_port, std::memory_order_release);
+      port_promise.set_value(actual_port);
     });
 
     server_thread_ = std::thread([]() { drogon::app().run(); });
 
-    bound_port_ = port_future.get();
-    running_.store(true);
+    uint16_t actual_port = port_future.get();
+    bound_port_.store(actual_port, std::memory_order_release);
+    running_.store(true, std::memory_order_release);
 
     // Wait until listener socket is ready to accept connections (up to 2 seconds)
     auto start_time = std::chrono::steady_clock::now();
@@ -303,7 +304,7 @@ public:
       if (test_s != INVALID_SOCKET) {
         sockaddr_in a{};
         a.sin_family = AF_INET;
-        a.sin_port = htons(bound_port_);
+        a.sin_port = htons(bound_port_.load(std::memory_order_acquire));
         ::inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
         if (::connect(test_s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0) {
           ::closesocket(test_s);
@@ -316,7 +317,7 @@ public:
       if (test_s >= 0) {
         sockaddr_in a{};
         a.sin_family = AF_INET;
-        a.sin_port = htons(bound_port_);
+        a.sin_port = htons(bound_port_.load(std::memory_order_acquire));
         ::inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
         if (::connect(test_s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0) {
           ::close(test_s);
@@ -345,7 +346,7 @@ public:
 
   void stop() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!running_.exchange(false)) {
+    if (!running_.exchange(false, std::memory_order_acq_rel)) {
       return;
     }
     if (pool_) {
@@ -357,14 +358,15 @@ public:
     if (server_thread_.joinable()) {
       server_thread_.join();
     }
-    bound_port_ = 0;
+    bound_port_.store(0, std::memory_order_release);
   }
 
-  [[nodiscard]] bool isRunning() const noexcept { return running_.load(); }
+  [[nodiscard]] bool isRunning() const noexcept { return running_.load(std::memory_order_acquire); }
 
   [[nodiscard]] uint16_t port() const noexcept {
-    if (running_.load() && bound_port_ != 0) {
-      return bound_port_;
+    uint16_t actual_port = bound_port_.load(std::memory_order_acquire);
+    if (running_.load(std::memory_order_acquire) && actual_port != 0) {
+      return actual_port;
     }
     return static_cast<uint16_t>(config_.port);
   }
@@ -618,7 +620,10 @@ private:
         std::make_shared<std::function<void(const drogon::HttpResponsePtr&)>>(std::move(callback));
 
     trantor::TimerId timer_id{};
-    auto loop = drogon::app().getLoop();
+    auto loop = trantor::EventLoop::getEventLoopOfCurrentThread();
+    if (!loop) {
+      loop = drogon::app().getLoop();
+    }
     if (config_.request_timeout_ms > 0 && loop) {
       double delay_sec = static_cast<double>(config_.request_timeout_ms) / 1000.0;
       timer_id = loop->runAfter(delay_sec, [cb, responded, cancelled]() {
@@ -710,7 +715,7 @@ private:
   std::thread server_thread_;
   std::mutex mutex_;
   std::atomic<bool> running_{false};
-  uint16_t bound_port_{0};
+  std::atomic<uint16_t> bound_port_{0};
 };
 
 HttpServer::HttpServer(const ServerConfig& config) : impl_(std::make_unique<Impl>(config)) {}

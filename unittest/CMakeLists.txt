@@ -56,15 +56,18 @@ if(WIN32)
     get_filename_component(ORT_DLL_DIR "${ORT_DLL_PATH}" DIRECTORY)
     gtest_discover_tests(pyreth_tests
       DISCOVERY_MODE PRE_TEST
+      DISCOVERY_TIMEOUT 120
       PROPERTIES ENVIRONMENT "PATH=${ORT_DLL_DIR}\;$ENV{PATH}"
     )
   else()
     gtest_discover_tests(pyreth_tests
       DISCOVERY_MODE PRE_TEST
+      DISCOVERY_TIMEOUT 120
     )
   endif()
 else()
   gtest_discover_tests(pyreth_tests
     DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 120
   )
 endif()

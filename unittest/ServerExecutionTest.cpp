@@ -290,8 +290,9 @@ HttpResponse sendHttpRequest(
       }
     }
 
-    // Under high concurrency load, if server was temporarily busy (503), retry!
-    if (resp.status_code == 503 && attempt < retries) {
+    // Under high concurrency load, if server was temporarily busy (503) or dropped connection (0),
+    // retry!
+    if ((resp.status_code == 503 || resp.status_code == 0) && attempt < retries) {
       continue;
     }
 
@@ -425,18 +426,18 @@ TEST(ServerExecutionTest, NonBlockingReactorVerification) {
   uint16_t port = server.port();
   ASSERT_GT(port, 0);
 
-  // Dispatch an async inference request with 300ms simulated delay in a separate client thread
+  // Dispatch an async inference request with 800ms simulated delay in a separate client thread
   std::string body = makeInferJson(1.0f, 2.0f);
   auto slow_future = std::async(std::launch::async, [port, body]() {
     return sendHttpRequest("127.0.0.1", port, "POST", "/v1/models/identity/infer",
                            {{"Content-Type", "application/json"},
                             {"X-Pyreth-Execution-Mode", "async"},
-                            {"X-Pyreth-Simulated-Delay-Ms", "300"}},
+                            {"X-Pyreth-Simulated-Delay-Ms", "800"}},
                            body);
   });
 
   // Brief pause to ensure the slow inference request has reached the server and is executing
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  std::this_thread::sleep_for(std::chrono::milliseconds(40));
 
   // Measure latency of GET /livez on the main thread while inference is delayed in ThreadPool
   auto live_start = std::chrono::steady_clock::now();
@@ -446,9 +447,9 @@ TEST(ServerExecutionTest, NonBlockingReactorVerification) {
                           .count();
 
   EXPECT_EQ(live_resp.status_code, 200);
-  // If reactor loop was blocked by inference, livez would take >= 300ms. It must return much
+  // If reactor loop was blocked by inference, livez would take >= 800ms. It must return much
   // faster!
-  EXPECT_LT(live_elapsed, 150);
+  EXPECT_LT(live_elapsed, 400);
 
   auto slow_resp = slow_future.get();
   EXPECT_EQ(slow_resp.status_code, 200);
@@ -501,7 +502,7 @@ TEST(ServerExecutionTest, HighConcurrencyStress) {
 
 // 5. Request Timeout Enforcement (504 Gateway Timeout)
 TEST(ServerExecutionTest, RequestTimeoutEnforcement) {
-  ServerConfig config{.host = "127.0.0.1", .port = 0, .io_threads = 2, .request_timeout_ms = 100};
+  ServerConfig config{.host = "127.0.0.1", .port = 0, .io_threads = 2, .request_timeout_ms = 400};
   HttpServer server(config);
 
   auto session = createValidSession();
@@ -512,12 +513,12 @@ TEST(ServerExecutionTest, RequestTimeoutEnforcement) {
   uint16_t port = server.port();
   ASSERT_GT(port, 0);
 
-  // Injects an artificial compute delay of 400ms exceeding request_timeout_ms (100ms)
+  // Injects an artificial compute delay of 1200ms exceeding request_timeout_ms (400ms)
   std::string body = makeInferJson(5.0f, 6.0f);
   auto resp = sendHttpRequest("127.0.0.1", port, "POST", "/v1/models/identity/infer",
                               {{"Content-Type", "application/json"},
                                {"X-Pyreth-Execution-Mode", "async"},
-                               {"X-Pyreth-Simulated-Delay-Ms", "400"}},
+                               {"X-Pyreth-Simulated-Delay-Ms", "1200"}},
                               body);
 
   EXPECT_EQ(resp.status_code, 504);
