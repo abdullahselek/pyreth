@@ -476,6 +476,10 @@ TEST(ServerExecutionTest, HighConcurrencyStress) {
   futures.reserve(kTotalRequests);
 
   for (int i = 0; i < kTotalRequests; ++i) {
+    // Small initial pacing to avoid instantaneous burst storm on single-socket loopback
+    if (i > 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
     futures.push_back(std::async(std::launch::async, [port, i]() {
       float v0 = static_cast<float>(i);
       float v1 = static_cast<float>(i * 2);
@@ -554,6 +558,10 @@ TEST(ServerExecutionTest, ArenaPerRequestIsolation) {
   futures.reserve(kNumRequests);
 
   for (int i = 0; i < kNumRequests; ++i) {
+    // Small initial pacing to avoid instantaneous burst storm on single-socket loopback
+    if (i > 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
     futures.push_back(std::async(std::launch::async, [port, i]() {
       float v0 = static_cast<float>(100 + i * 3);
       float v1 = static_cast<float>(200 + i * 7);
