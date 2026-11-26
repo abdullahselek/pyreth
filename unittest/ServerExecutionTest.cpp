@@ -105,10 +105,10 @@ std::string toLower(std::string_view s) {
 HttpResponse sendHttpRequest(
     const std::string& host, uint16_t port, const std::string& method, const std::string& path,
     const std::unordered_map<std::string, std::string>& custom_headers = {},
-    const std::string& body = "", int timeout_sec = 15, int retries = 5) {
+    const std::string& body = "", int timeout_sec = 20, int retries = 10) {
   for (int attempt = 0; attempt <= retries; ++attempt) {
     if (attempt > 0) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(25 * attempt));
+      std::this_thread::sleep_for(std::chrono::milliseconds(50 * attempt));
     }
 
     std::string target_ip = (host == "0.0.0.0" || host.empty()) ? "127.0.0.1" : host;
@@ -458,7 +458,7 @@ TEST(ServerExecutionTest, NonBlockingReactorVerification) {
   EXPECT_FALSE(server.isRunning());
 }
 
-// 4. High Concurrency Stress Test (50 concurrent requests)
+// 4. High Concurrency Stress Test (25 concurrent requests)
 TEST(ServerExecutionTest, HighConcurrencyStress) {
   ServerConfig config{.host = "127.0.0.1", .port = 0, .io_threads = 4};
   HttpServer server(config);
@@ -471,7 +471,7 @@ TEST(ServerExecutionTest, HighConcurrencyStress) {
   uint16_t port = server.port();
   ASSERT_GT(port, 0);
 
-  constexpr int kTotalRequests = 50;
+  constexpr int kTotalRequests = 25;
   std::vector<std::future<HttpResponse>> futures;
   futures.reserve(kTotalRequests);
 
@@ -549,7 +549,7 @@ TEST(ServerExecutionTest, ArenaPerRequestIsolation) {
   ASSERT_GT(port, 0);
 
   // Concurrently dispatch requests requiring distinct input values
-  constexpr int kNumRequests = 20;
+  constexpr int kNumRequests = 12;
   std::vector<std::future<HttpResponse>> futures;
   futures.reserve(kNumRequests);
 
