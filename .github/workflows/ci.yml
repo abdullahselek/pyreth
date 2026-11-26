@@ -191,10 +191,23 @@ jobs:
           if ! ctest --test-dir build-san --output-on-failure; then
             echo "### CTest Failure (${{ matrix.name }} on ${{ matrix.os }})" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
+            if [ -f build-san/Testing/Temporary/LastTestsFailed.log ]; then
+              FAILED_LIST=$(cat build-san/Testing/Temporary/LastTestsFailed.log | tr '\r\n' ', ')
+              echo "::error title=Failed Tests::$FAILED_LIST"
+            fi
             if [ -f build-san/Testing/Temporary/LastTest.log ]; then
               cat build-san/Testing/Temporary/LastTest.log >> $GITHUB_STEP_SUMMARY
               cat build-san/Testing/Temporary/LastTest.log
+              FAIL_LOG=$(tail -n 35 build-san/Testing/Temporary/LastTest.log | tr '\r\n' ' ')
+              echo "::error title=LastTest Log::$FAIL_LOG"
             fi
             echo '```' >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
+
+      - name: Upload Test Logs on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.name }}-${{ matrix.os }}
+          path: build-san/Testing/Temporary/
