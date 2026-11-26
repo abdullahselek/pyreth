@@ -644,15 +644,28 @@ private:
 
     auto submit_res = pool_->submit([this, execute_inference, cancelled, responded, cb, timer_id,
                                      loop]() {
-      if (cancelled->load(std::memory_order_acquire) || !running_.load(std::memory_order_acquire)) {
-        if (!responded->exchange(true, std::memory_order_acq_rel)) {
-          if (timer_id != trantor::TimerId{} && loop) {
+      auto send_response = [loop, timer_id, cb](const drogon::HttpResponsePtr& resp) {
+        if (loop && loop->isRunning()) {
+          loop->runInLoop([loop, timer_id, cb, resp]() {
+            if (timer_id != trantor::TimerId{}) {
+              loop->invalidateTimer(timer_id);
+            }
+            (*cb)(resp);
+          });
+        } else {
+          if (loop && timer_id != trantor::TimerId{}) {
             loop->invalidateTimer(timer_id);
           }
+          (*cb)(resp);
+        }
+      };
+
+      if (cancelled->load(std::memory_order_acquire) || !running_.load(std::memory_order_acquire)) {
+        if (!responded->exchange(true, std::memory_order_acq_rel)) {
           auto resp = drogon::HttpResponse::newHttpResponse();
           resp->setStatusCode(drogon::k503ServiceUnavailable);
           resp->setCloseConnection(true);
-          (*cb)(resp);
+          send_response(resp);
         }
         return;
       }
@@ -660,33 +673,24 @@ private:
       auto resp = execute_inference(cancelled);
       if (!resp) {
         if (!responded->exchange(true, std::memory_order_acq_rel)) {
-          if (timer_id != trantor::TimerId{} && loop) {
-            loop->invalidateTimer(timer_id);
-          }
           auto err_resp = drogon::HttpResponse::newHttpResponse();
           err_resp->setStatusCode(drogon::k503ServiceUnavailable);
           err_resp->setCloseConnection(true);
-          (*cb)(err_resp);
+          send_response(err_resp);
         }
         return;
       }
 
       if (!running_.load(std::memory_order_acquire)) {
         if (!responded->exchange(true, std::memory_order_acq_rel)) {
-          if (timer_id != trantor::TimerId{} && loop) {
-            loop->invalidateTimer(timer_id);
-          }
           resp->setCloseConnection(true);
-          (*cb)(resp);
+          send_response(resp);
         }
         return;
       }
 
       if (!responded->exchange(true, std::memory_order_acq_rel)) {
-        if (timer_id != trantor::TimerId{} && loop) {
-          loop->invalidateTimer(timer_id);
-        }
-        (*cb)(resp);
+        send_response(resp);
       }
     });
 

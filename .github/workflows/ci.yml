@@ -193,6 +193,7 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
             if [ -f build-san/Testing/Temporary/LastTest.log ]; then
               cat build-san/Testing/Temporary/LastTest.log >> $GITHUB_STEP_SUMMARY
+              cat build-san/Testing/Temporary/LastTest.log
             fi
             echo '```' >> $GITHUB_STEP_SUMMARY
             exit 1
