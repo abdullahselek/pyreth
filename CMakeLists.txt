@@ -242,6 +242,9 @@ add_library(PyrethServer STATIC
     src/server/http_server.cpp
     src/server/model_registry.cpp
     src/server/protocol.cpp
+    src/server/binary_protocol.cpp
+    src/server/streaming.cpp
+    src/server/endpoint.cpp
 )
 
 set_target_properties(PyrethServer PROPERTIES

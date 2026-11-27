@@ -5,12 +5,14 @@
 #include <pyreth/common.hpp>
 #include <pyreth/memory_pool.hpp>
 #include <pyreth/result.hpp>
+#include <pyreth/server/endpoint.hpp>
 #include <pyreth/server/execution_mode.hpp>
 #include <pyreth/server/model_registry.hpp>
 #include <pyreth/server/server_config.hpp>
 #include <pyreth/thread_pool.hpp>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace pyreth::server {
 
@@ -55,6 +57,8 @@ public:
 
   [[nodiscard]] ModelRegistry& modelRegistry() noexcept;
   [[nodiscard]] const ModelRegistry& modelRegistry() const noexcept;
+
+  EndpointBuilder& route(std::string path);
 
 private:
   class Impl;
