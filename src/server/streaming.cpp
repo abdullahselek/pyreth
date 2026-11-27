@@ -1,4 +1,5 @@
 #include <drogon/WebSocketController.h>
+#include <drogon/drogon.h>
 #include <json/json.h>
 
 #include <atomic>
@@ -11,6 +12,38 @@
 #include <string>
 
 namespace pyreth::server {
+
+namespace {
+
+/**
+ * @struct WsConnHolder
+ * @brief Ensures drogon::WebSocketConnectionPtr is cleanly released on the Drogon IO loop thread,
+ * preventing cross-thread destruction and data races on internal connection state.
+ */
+struct WsConnHolder {
+  drogon::WebSocketConnectionPtr conn;
+
+  explicit WsConnHolder(drogon::WebSocketConnectionPtr c) noexcept : conn(std::move(c)) {}
+  ~WsConnHolder() {
+    if (conn) {
+      if (drogon::app().isRunning() && drogon::app().getLoop()) {
+        drogon::app().getLoop()->queueInLoop([c = std::move(conn)]() mutable { c.reset(); });
+      } else {
+        conn.reset();
+      }
+    }
+  }
+
+  WsConnHolder(WsConnHolder&&) noexcept = default;
+  WsConnHolder& operator=(WsConnHolder&&) noexcept = default;
+  WsConnHolder(const WsConnHolder&) = delete;
+  WsConnHolder& operator=(const WsConnHolder&) = delete;
+
+  drogon::WebSocketConnection* operator->() const noexcept { return conn.get(); }
+  explicit operator bool() const noexcept { return conn != nullptr; }
+};
+
+}  // namespace
 
 std::string formatSSEEvent(std::string_view event, std::string_view data) {
   std::string frame;
@@ -96,9 +129,10 @@ public:
       std::vector<Tensor> input_tensors;
       input_tensors.push_back(std::move(tensor_res.value()));
 
-      auto submit_res = thread_pool->submit(
-          [wsConnPtr, session, tensors = std::move(input_tensors), msg_holder]() mutable {
-            if (!wsConnPtr) {
+      auto submit_res =
+          thread_pool->submit([holder = WsConnHolder(wsConnPtr), session,
+                               tensors = std::move(input_tensors), msg_holder]() mutable {
+            if (!holder) {
               return;
             }
 
@@ -108,7 +142,7 @@ public:
               err["error"] = std::string(run_res.error().message());
               Json::StreamWriterBuilder writer;
               writer["indentation"] = "";
-              wsConnPtr->send(Json::writeString(writer, err));
+              holder->send(Json::writeString(writer, err));
               return;
             }
 
@@ -118,7 +152,7 @@ public:
               err["error"] = "Model produced no outputs";
               Json::StreamWriterBuilder writer;
               writer["indentation"] = "";
-              wsConnPtr->send(Json::writeString(writer, err));
+              holder->send(Json::writeString(writer, err));
               return;
             }
 
@@ -128,13 +162,13 @@ public:
               err["error"] = std::string(ser_bin.error().message());
               Json::StreamWriterBuilder writer;
               writer["indentation"] = "";
-              wsConnPtr->send(Json::writeString(writer, err));
+              holder->send(Json::writeString(writer, err));
               return;
             }
 
             const auto& bin_data = ser_bin.value();
-            wsConnPtr->send(reinterpret_cast<const char*>(bin_data.data()), bin_data.size(),
-                            drogon::WebSocketMessageType::Binary);
+            holder->send(reinterpret_cast<const char*>(bin_data.data()), bin_data.size(),
+                         drogon::WebSocketMessageType::Binary);
           });
       (void)submit_res;
       return;
@@ -142,50 +176,50 @@ public:
 
     // Text / JSON frame handling
     std::string msg_copy = std::move(message);
-    auto submit_res = thread_pool->submit(
-        [wsConnPtr, session, memory_pool, model_name, body = std::move(msg_copy)]() mutable {
-          if (!wsConnPtr) {
-            return;
-          }
+    auto submit_res = thread_pool->submit([holder = WsConnHolder(wsConnPtr), session, memory_pool,
+                                           model_name, body = std::move(msg_copy)]() mutable {
+      if (!holder) {
+        return;
+      }
 
-          auto lease = memory_pool->acquire();
-          ArenaAllocator& arena = lease.get();
+      auto lease = memory_pool->acquire();
+      ArenaAllocator& arena = lease.get();
 
-          auto req_res = parseKServeRequest(body, arena);
-          if (!req_res.isOk()) {
-            Json::Value err;
-            err["error"] = std::string(req_res.error().message());
-            Json::StreamWriterBuilder writer;
-            writer["indentation"] = "";
-            wsConnPtr->send(Json::writeString(writer, err));
-            return;
-          }
+      auto req_res = parseKServeRequest(body, arena);
+      if (!req_res.isOk()) {
+        Json::Value err;
+        err["error"] = std::string(req_res.error().message());
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+        holder->send(Json::writeString(writer, err));
+        return;
+      }
 
-          auto tensors = req_res.value().extractTensors();
+      auto tensors = req_res.value().extractTensors();
 
-          auto run_res = session->run(tensors);
-          if (!run_res.isOk()) {
-            Json::Value err;
-            err["error"] = std::string(run_res.error().message());
-            Json::StreamWriterBuilder writer;
-            writer["indentation"] = "";
-            wsConnPtr->send(Json::writeString(writer, err));
-            return;
-          }
+      auto run_res = session->run(tensors);
+      if (!run_res.isOk()) {
+        Json::Value err;
+        err["error"] = std::string(run_res.error().message());
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+        holder->send(Json::writeString(writer, err));
+        return;
+      }
 
-          auto out_names = session->getOutputNames();
-          auto ser_res = serializeKServeResponse(model_name, out_names, run_res.value(), "1");
-          if (!ser_res.isOk()) {
-            Json::Value err;
-            err["error"] = std::string(ser_res.error().message());
-            Json::StreamWriterBuilder writer;
-            writer["indentation"] = "";
-            wsConnPtr->send(Json::writeString(writer, err));
-            return;
-          }
+      auto out_names = session->getOutputNames();
+      auto ser_res = serializeKServeResponse(model_name, out_names, run_res.value(), "1");
+      if (!ser_res.isOk()) {
+        Json::Value err;
+        err["error"] = std::string(ser_res.error().message());
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+        holder->send(Json::writeString(writer, err));
+        return;
+      }
 
-          wsConnPtr->send(ser_res.value(), drogon::WebSocketMessageType::Text);
-        });
+      holder->send(ser_res.value(), drogon::WebSocketMessageType::Text);
+    });
     (void)submit_res;
   }
 

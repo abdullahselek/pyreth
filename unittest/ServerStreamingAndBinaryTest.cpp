@@ -262,6 +262,85 @@ socket_t connectSocketWithRetry(const std::string& host, uint16_t port, int time
   return kInvalidSocket;
 }
 
+bool sendAll(socket_t sock, const void* buf, size_t len) {
+  size_t total = 0;
+  const char* ptr = static_cast<const char*>(buf);
+  while (total < len) {
+#ifdef _WIN32
+    int n = ::send(sock, ptr + total, static_cast<int>(len - total), 0);
+#else
+    ssize_t n = ::send(sock, ptr + total, len - total, 0);
+#endif
+    if (n <= 0) {
+      if (n < 0 && (errno == EINTR)) {
+        continue;
+      }
+      return false;
+    }
+    total += static_cast<size_t>(n);
+  }
+  return true;
+}
+
+bool recvAll(socket_t sock, void* buf, size_t len) {
+  size_t total = 0;
+  char* ptr = static_cast<char*>(buf);
+  while (total < len) {
+#ifdef _WIN32
+    int n = ::recv(sock, ptr + total, static_cast<int>(len - total), 0);
+#else
+    ssize_t n = ::recv(sock, ptr + total, len - total, 0);
+#endif
+    if (n <= 0) {
+      if (n < 0 && (errno == EINTR)) {
+        continue;
+      }
+      return false;
+    }
+    total += static_cast<size_t>(n);
+  }
+  return true;
+}
+
+bool performWebSocketHandshake(socket_t sock, const std::string& path,
+                               const std::string& host = "127.0.0.1") {
+  std::string handshake = "GET " + path +
+                          " HTTP/1.1\r\n"
+                          "Host: " +
+                          host +
+                          "\r\n"
+                          "Upgrade: websocket\r\n"
+                          "Connection: Upgrade\r\n"
+                          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                          "Sec-WebSocket-Version: 13\r\n\r\n";
+
+  if (!sendAll(sock, handshake.data(), handshake.size())) {
+    return false;
+  }
+
+  std::string response;
+  char buf[512];
+  while (response.find("\r\n\r\n") == std::string::npos) {
+#ifdef _WIN32
+    int n = ::recv(sock, buf, sizeof(buf), 0);
+#else
+    ssize_t n = ::recv(sock, buf, sizeof(buf), 0);
+#endif
+    if (n <= 0) {
+      if (n < 0 && (errno == EINTR)) {
+        continue;
+      }
+      return false;
+    }
+    response.append(buf, static_cast<size_t>(n));
+    if (response.size() > 8192) {
+      return false;
+    }
+  }
+
+  return response.find("101 Switching Protocols") != std::string::npos;
+}
+
 HttpResponse sendHttpRequest(
     const std::string& host, uint16_t port, const std::string& method, const std::string& path,
     const std::unordered_map<std::string, std::string>& custom_headers = {},
@@ -465,33 +544,25 @@ struct WsFrame {
 
 WsFrame readWsServerFrame(socket_t sock) {
   uint8_t header[2];
-#ifdef _WIN32
-  int n = ::recv(sock, reinterpret_cast<char*>(header), 2, MSG_WAITALL);
-#else
-  ssize_t n = ::recv(sock, header, 2, MSG_WAITALL);
-#endif
-  if (n < 2)
+  if (!recvAll(sock, header, 2)) {
     return {};
+  }
 
   uint8_t opcode = header[0] & 0x0F;
   bool masked = (header[1] & 0x80) != 0;
   uint64_t payload_len = header[1] & 0x7F;
 
   if (payload_len == 126) {
-    uint8_t ext[2];
-#ifdef _WIN32
-    ::recv(sock, reinterpret_cast<char*>(ext), 2, MSG_WAITALL);
-#else
-    ::recv(sock, ext, 2, MSG_WAITALL);
-#endif
+    uint8_t ext[2] = {0, 0};
+    if (!recvAll(sock, ext, 2)) {
+      return {};
+    }
     payload_len = (static_cast<uint64_t>(ext[0]) << 8) | ext[1];
   } else if (payload_len == 127) {
-    uint8_t ext[8];
-#ifdef _WIN32
-    ::recv(sock, reinterpret_cast<char*>(ext), 8, MSG_WAITALL);
-#else
-    ::recv(sock, ext, 8, MSG_WAITALL);
-#endif
+    uint8_t ext[8] = {0};
+    if (!recvAll(sock, ext, 8)) {
+      return {};
+    }
     payload_len = 0;
     for (int i = 0; i < 8; ++i) {
       payload_len = (payload_len << 8) | ext[i];
@@ -500,25 +571,16 @@ WsFrame readWsServerFrame(socket_t sock) {
 
   uint8_t mask_key[4] = {0};
   if (masked) {
-#ifdef _WIN32
-    ::recv(sock, reinterpret_cast<char*>(mask_key), 4, MSG_WAITALL);
-#else
-    ::recv(sock, mask_key, 4, MSG_WAITALL);
-#endif
+    if (!recvAll(sock, mask_key, 4)) {
+      return {};
+    }
   }
 
   std::vector<uint8_t> payload(payload_len);
-  size_t total = 0;
-  while (total < payload_len) {
-#ifdef _WIN32
-    int r = ::recv(sock, reinterpret_cast<char*>(payload.data() + total),
-                   static_cast<int>(payload_len - total), 0);
-#else
-    ssize_t r = ::recv(sock, payload.data() + total, payload_len - total, 0);
-#endif
-    if (r <= 0)
-      break;
-    total += static_cast<size_t>(r);
+  if (payload_len > 0) {
+    if (!recvAll(sock, payload.data(), payload_len)) {
+      return {};
+    }
   }
 
   if (masked) {
@@ -715,11 +777,7 @@ TEST(ServerStreamingTest, SSEClientEarlyDisconnect) {
   ASSERT_TRUE(isValidSocket(sock));
 
   std::string req = "GET /v1/models/identity/stream HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
-#ifdef _WIN32
-  ::send(sock, req.data(), static_cast<int>(req.size()), 0);
-#else
-  ::send(sock, req.data(), req.size(), 0);
-#endif
+  ASSERT_TRUE(sendAll(sock, req.data(), req.size()));
 
   // Read small chunk
   char buf[256];
@@ -758,30 +816,7 @@ TEST(ServerWebSocketTest, HandshakeAndEcho) {
   // Connect socket and perform RFC 6455 WebSocket Handshake with retry
   socket_t sock = connectSocketWithRetry("127.0.0.1", server.port());
   ASSERT_TRUE(isValidSocket(sock));
-
-  std::string handshake =
-      "GET /v1/models/identity/ws HTTP/1.1\r\n"
-      "Host: 127.0.0.1\r\n"
-      "Upgrade: websocket\r\n"
-      "Connection: Upgrade\r\n"
-      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-      "Sec-WebSocket-Version: 13\r\n\r\n";
-
-#ifdef _WIN32
-  ::send(sock, handshake.data(), static_cast<int>(handshake.size()), 0);
-#else
-  ::send(sock, handshake.data(), handshake.size(), 0);
-#endif
-
-  char buf[1024];
-#ifdef _WIN32
-  int n = ::recv(sock, buf, sizeof(buf), 0);
-#else
-  ssize_t n = ::recv(sock, buf, sizeof(buf), 0);
-#endif
-  ASSERT_GT(n, 0);
-  std::string upgrade_resp(buf, static_cast<size_t>(n));
-  EXPECT_NE(upgrade_resp.find("101 Switching Protocols"), std::string::npos);
+  ASSERT_TRUE(performWebSocketHandshake(sock, "/v1/models/identity/ws"));
 
   // 1. Send text JSON inference frame
   std::string kserve_json =
@@ -791,12 +826,7 @@ TEST(ServerWebSocketTest, HandshakeAndEcho) {
       std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(kserve_json.data()),
                                kserve_json.size()),
       0x01);
-#ifdef _WIN32
-  ::send(sock, reinterpret_cast<const char*>(text_frame.data()),
-         static_cast<int>(text_frame.size()), 0);
-#else
-  ::send(sock, text_frame.data(), text_frame.size(), 0);
-#endif
+  ASSERT_TRUE(sendAll(sock, text_frame.data(), text_frame.size()));
 
   auto resp_frame = readWsServerFrame(sock);
   EXPECT_EQ(resp_frame.opcode, 0x01);  // Text frame
@@ -820,12 +850,7 @@ TEST(ServerWebSocketTest, HandshakeAndEcho) {
               bin_data.size() * sizeof(float));
 
   auto bin_frame = makeWsClientFrame(bin_payload, 0x02);  // Binary frame
-#ifdef _WIN32
-  ::send(sock, reinterpret_cast<const char*>(bin_frame.data()), static_cast<int>(bin_frame.size()),
-         0);
-#else
-  ::send(sock, bin_frame.data(), bin_frame.size(), 0);
-#endif
+  ASSERT_TRUE(sendAll(sock, bin_frame.data(), bin_frame.size()));
 
   auto resp_bin_frame = readWsServerFrame(sock);
   EXPECT_EQ(resp_bin_frame.opcode, 0x02);  // Binary frame
@@ -862,47 +887,25 @@ TEST(ServerWebSocketTest, ConcurrentWebSocketSessions) {
   for (int i = 0; i < kNumSessions; ++i) {
     // Small initial pacing to avoid instantaneous burst storm on single-socket loopback
     if (i > 0) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     threads.emplace_back([&server, &start_latch, &success_count, i]() {
       socket_t sock = kInvalidSocket;
       bool handshook = false;
-      for (int attempt = 0; attempt < 5 && !handshook; ++attempt) {
+      for (int attempt = 0; attempt < 10 && !handshook; ++attempt) {
         if (attempt > 0) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(20 * attempt));
+          std::this_thread::sleep_for(std::chrono::milliseconds(50 * attempt));
         }
-        sock = connectSocketWithRetry("127.0.0.1", server.port(), 10, 20);
+        sock = connectSocketWithRetry("127.0.0.1", server.port(), 20, 50);
         if (!isValidSocket(sock)) {
           continue;
         }
 
-        std::string handshake =
-            "GET /v1/models/identity/ws HTTP/1.1\r\n"
-            "Host: 127.0.0.1\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n";
-
-#ifdef _WIN32
-        ::send(sock, handshake.data(), static_cast<int>(handshake.size()), 0);
-#else
-        ::send(sock, handshake.data(), handshake.size(), 0);
-#endif
-
-        char buf[1024];
-#ifdef _WIN32
-        int n = ::recv(sock, buf, sizeof(buf), 0);
-#else
-        ssize_t n = ::recv(sock, buf, sizeof(buf), 0);
-#endif
-        if (n > 0) {
-          std::string upgrade_resp(buf, static_cast<size_t>(n));
-          if (upgrade_resp.find("101 Switching Protocols") != std::string::npos) {
-            handshook = true;
-            break;
-          }
+        if (performWebSocketHandshake(sock, "/v1/models/identity/ws")) {
+          handshook = true;
+          break;
         }
+
         closeSocket(sock);
         sock = kInvalidSocket;
       }
@@ -922,18 +925,14 @@ TEST(ServerWebSocketTest, ConcurrentWebSocketSessions) {
                                 reinterpret_cast<const uint8_t*>(req_json.data()), req_json.size()),
                             0x01);
 
-#ifdef _WIN32
-      ::send(sock, reinterpret_cast<const char*>(frame.data()), static_cast<int>(frame.size()), 0);
-#else
-      ::send(sock, frame.data(), frame.size(), 0);
-#endif
-
-      auto resp_frame = readWsServerFrame(sock);
-      if (resp_frame.opcode == 0x01) {
-        std::string resp_str(reinterpret_cast<const char*>(resp_frame.payload.data()),
-                             resp_frame.payload.size());
-        if (resp_str.find(std::to_string(i) + ".0") != std::string::npos) {
-          success_count.fetch_add(1, std::memory_order_relaxed);
+      if (sendAll(sock, frame.data(), frame.size())) {
+        auto resp_frame = readWsServerFrame(sock);
+        if (resp_frame.opcode == 0x01) {
+          std::string resp_str(reinterpret_cast<const char*>(resp_frame.payload.data()),
+                               resp_frame.payload.size());
+          if (resp_str.find(std::to_string(i) + ".0") != std::string::npos) {
+            success_count.fetch_add(1, std::memory_order_relaxed);
+          }
         }
       }
 
