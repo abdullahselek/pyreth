@@ -608,25 +608,16 @@ private:
 
     auto body = std::string(req->body());
 
-    // Weak connection pointer to detect early client disconnect
-    const auto& weakConnPtr = req->getConnectionPtr();
-
     auto resp = drogon::HttpResponse::newAsyncStreamResponse(
-        [this, session, body = std::move(body), weakConnPtr](drogon::ResponseStreamPtr stream) {
-          auto submit_res = pool_->submit([session, body = std::move(body), weakConnPtr,
-                                           stream = std::move(stream)]() mutable {
-            auto is_conn_closed = [&weakConnPtr]() -> bool {
-              auto conn = weakConnPtr.lock();
-              return (!conn || conn->disconnected());
-            };
-
+        [session, body = std::move(body)](drogon::ResponseStreamPtr stream) {
+          auto* active = activeInstance().load(std::memory_order_acquire);
+          if (!active) {
+            return;
+          }
+          auto submit_res = active->threadPool().submit([session, body = std::move(body),
+                                                         stream = std::move(stream)]() mutable {
             // Stream incremental step tokens/chunks
             for (int step = 0; step < 3; ++step) {
-              if (is_conn_closed()) {
-                // Client early disconnect detected, abort cleanly
-                return;
-              }
-
               Json::Value step_data;
               step_data["step"] = step;
               step_data["token"] = "step_" + std::to_string(step);
@@ -639,18 +630,15 @@ private:
               std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
 
-            if (is_conn_closed()) {
-              return;
-            }
-
             // Terminal event frame
             Json::Value done_data;
             done_data["status"] = "finished";
             Json::StreamWriterBuilder writer;
             writer["indentation"] = "";
             std::string done_frame = formatSSEEvent("done", Json::writeString(writer, done_data));
-            stream->send(done_frame);
-            stream->close();
+            if (stream->send(done_frame)) {
+              stream->close();
+            }
           });
           (void)submit_res;
         });

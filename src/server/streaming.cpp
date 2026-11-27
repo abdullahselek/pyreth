@@ -98,7 +98,7 @@ public:
 
       auto submit_res = thread_pool->submit(
           [wsConnPtr, session, tensors = std::move(input_tensors), msg_holder]() mutable {
-            if (!wsConnPtr || wsConnPtr->disconnected()) {
+            if (!wsConnPtr) {
               return;
             }
 
@@ -144,7 +144,7 @@ public:
     std::string msg_copy = std::move(message);
     auto submit_res = thread_pool->submit(
         [wsConnPtr, session, memory_pool, model_name, body = std::move(msg_copy)]() mutable {
-          if (!wsConnPtr || wsConnPtr->disconnected()) {
+          if (!wsConnPtr) {
             return;
           }
 

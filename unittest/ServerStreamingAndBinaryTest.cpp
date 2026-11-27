@@ -225,51 +225,55 @@ std::string toLower(std::string_view s) {
   return res;
 }
 
+socket_t connectSocketWithRetry(const std::string& host, uint16_t port, int timeout_sec = 20,
+                                int retries = 50) {
+  std::string target_ip = (host == "0.0.0.0" || host.empty()) ? "127.0.0.1" : host;
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  ::inet_pton(AF_INET, target_ip.c_str(), &addr.sin_addr);
+
+  for (int conn_try = 0; conn_try < retries; ++conn_try) {
+    if (conn_try > 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    socket_t sock = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (!isValidSocket(sock)) {
+      continue;
+    }
+#ifdef _WIN32
+    DWORD timeout_ms = static_cast<DWORD>(timeout_sec * 1000);
+    ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms),
+                 sizeof(timeout_ms));
+    ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms),
+                 sizeof(timeout_ms));
+#else
+    struct timeval tv{};
+    tv.tv_sec = timeout_sec;
+    tv.tv_usec = 0;
+    ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+    if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+      return sock;
+    }
+    closeSocket(sock);
+  }
+  return kInvalidSocket;
+}
+
 HttpResponse sendHttpRequest(
     const std::string& host, uint16_t port, const std::string& method, const std::string& path,
     const std::unordered_map<std::string, std::string>& custom_headers = {},
     const std::string& body = "", int timeout_sec = 20, int retries = 10) {
+  std::string target_ip = (host == "0.0.0.0" || host.empty()) ? "127.0.0.1" : host;
   for (int attempt = 0; attempt <= retries; ++attempt) {
     if (attempt > 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(50 * attempt));
     }
 
-    std::string target_ip = (host == "0.0.0.0" || host.empty()) ? "127.0.0.1" : host;
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    ::inet_pton(AF_INET, target_ip.c_str(), &addr.sin_addr);
-
-    socket_t sock = kInvalidSocket;
-    bool connected = false;
-    for (int conn_try = 0; conn_try < 100; ++conn_try) {
-      sock = ::socket(AF_INET, SOCK_STREAM, 0);
-      if (!isValidSocket(sock)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        continue;
-      }
-#ifdef _WIN32
-      DWORD timeout_ms = static_cast<DWORD>(timeout_sec * 1000);
-      ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms),
-                   sizeof(timeout_ms));
-      ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms),
-                   sizeof(timeout_ms));
-#else
-      struct timeval tv{};
-      tv.tv_sec = timeout_sec;
-      tv.tv_usec = 0;
-      ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-      ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-#endif
-      if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
-        connected = true;
-        break;
-      }
-      closeSocket(sock);
-      sock = kInvalidSocket;
-      std::this_thread::sleep_for(std::chrono::milliseconds(15));
-    }
-    if (!connected || !isValidSocket(sock)) {
+    socket_t sock = connectSocketWithRetry(host, port, timeout_sec, 100);
+    if (!isValidSocket(sock)) {
       continue;
     }
 
@@ -705,15 +709,10 @@ TEST(ServerStreamingTest, SSEClientEarlyDisconnect) {
   ASSERT_TRUE(server.registerModel("identity", session).isOk());
   ASSERT_TRUE(server.startAsync().isOk());
 
-  // Connect socket, send GET /v1/models/identity/stream, receive initial chunk, then close abruptly
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(server.port());
-  ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-
-  socket_t sock = ::socket(AF_INET, SOCK_STREAM, 0);
+  // Connect socket with robust retry, send GET /v1/models/identity/stream, receive initial chunk,
+  // then close abruptly
+  socket_t sock = connectSocketWithRetry("127.0.0.1", server.port());
   ASSERT_TRUE(isValidSocket(sock));
-  ASSERT_EQ(::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
 
   std::string req = "GET /v1/models/identity/stream HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
 #ifdef _WIN32
@@ -756,15 +755,9 @@ TEST(ServerWebSocketTest, HandshakeAndEcho) {
   ASSERT_TRUE(server.registerModel("identity", session).isOk());
   ASSERT_TRUE(server.startAsync().isOk());
 
-  // Connect socket and perform RFC 6455 WebSocket Handshake
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(server.port());
-  ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-
-  socket_t sock = ::socket(AF_INET, SOCK_STREAM, 0);
+  // Connect socket and perform RFC 6455 WebSocket Handshake with retry
+  socket_t sock = connectSocketWithRetry("127.0.0.1", server.port());
   ASSERT_TRUE(isValidSocket(sock));
-  ASSERT_EQ(::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
 
   std::string handshake =
       "GET /v1/models/identity/ws HTTP/1.1\r\n"
@@ -872,46 +865,54 @@ TEST(ServerWebSocketTest, ConcurrentWebSocketSessions) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     threads.emplace_back([&server, &start_latch, &success_count, i]() {
-      sockaddr_in addr{};
-      addr.sin_family = AF_INET;
-      addr.sin_port = htons(server.port());
-      ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+      socket_t sock = kInvalidSocket;
+      bool handshook = false;
+      for (int attempt = 0; attempt < 5 && !handshook; ++attempt) {
+        if (attempt > 0) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(20 * attempt));
+        }
+        sock = connectSocketWithRetry("127.0.0.1", server.port(), 10, 20);
+        if (!isValidSocket(sock)) {
+          continue;
+        }
 
-      socket_t sock = ::socket(AF_INET, SOCK_STREAM, 0);
-      if (!isValidSocket(sock))
-        return;
-      if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        closeSocket(sock);
-        return;
-      }
-
-      std::string handshake =
-          "GET /v1/models/identity/ws HTTP/1.1\r\n"
-          "Host: 127.0.0.1\r\n"
-          "Upgrade: websocket\r\n"
-          "Connection: Upgrade\r\n"
-          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-          "Sec-WebSocket-Version: 13\r\n\r\n";
+        std::string handshake =
+            "GET /v1/models/identity/ws HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n";
 
 #ifdef _WIN32
-      ::send(sock, handshake.data(), static_cast<int>(handshake.size()), 0);
+        ::send(sock, handshake.data(), static_cast<int>(handshake.size()), 0);
 #else
-      ::send(sock, handshake.data(), handshake.size(), 0);
+        ::send(sock, handshake.data(), handshake.size(), 0);
 #endif
 
-      char buf[1024];
+        char buf[1024];
 #ifdef _WIN32
-      int n = ::recv(sock, buf, sizeof(buf), 0);
+        int n = ::recv(sock, buf, sizeof(buf), 0);
 #else
-      ssize_t n = ::recv(sock, buf, sizeof(buf), 0);
+        ssize_t n = ::recv(sock, buf, sizeof(buf), 0);
 #endif
-      if (n <= 0) {
+        if (n > 0) {
+          std::string upgrade_resp(buf, static_cast<size_t>(n));
+          if (upgrade_resp.find("101 Switching Protocols") != std::string::npos) {
+            handshook = true;
+            break;
+          }
+        }
         closeSocket(sock);
-        return;
+        sock = kInvalidSocket;
       }
 
       start_latch.count_down();
       start_latch.wait();
+
+      if (!handshook || !isValidSocket(sock)) {
+        return;
+      }
 
       std::string req_json =
           "{\"inputs\":[{\"name\":\"input\",\"shape\":[1,4],\"datatype\":\"FP32\",\"data\":[" +
