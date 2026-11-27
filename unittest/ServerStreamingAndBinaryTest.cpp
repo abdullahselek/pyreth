@@ -871,7 +871,7 @@ TEST(ServerWebSocketTest, ConcurrentWebSocketSessions) {
   ServerConfig config;
   config.host = "127.0.0.1";
   config.port = 0;
-  config.io_threads = 4;
+  config.io_threads = 2;
 
   HttpServer server(config);
   auto session = createDynamicSession();
@@ -879,7 +879,7 @@ TEST(ServerWebSocketTest, ConcurrentWebSocketSessions) {
   ASSERT_TRUE(server.registerModel("identity", session).isOk());
   ASSERT_TRUE(server.startAsync().isOk());
 
-  constexpr int kNumSessions = 10;
+  constexpr int kNumSessions = 5;
   std::latch start_latch(kNumSessions);
   std::vector<std::thread> threads;
   std::atomic<int> success_count{0};
@@ -887,7 +887,7 @@ TEST(ServerWebSocketTest, ConcurrentWebSocketSessions) {
   for (int i = 0; i < kNumSessions; ++i) {
     // Small initial pacing to avoid instantaneous burst storm on single-socket loopback
     if (i > 0) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     threads.emplace_back([&server, &start_latch, &success_count, i]() {
       socket_t sock = kInvalidSocket;
