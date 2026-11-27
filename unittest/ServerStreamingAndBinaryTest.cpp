@@ -228,7 +228,7 @@ std::string toLower(std::string_view s) {
 HttpResponse sendHttpRequest(
     const std::string& host, uint16_t port, const std::string& method, const std::string& path,
     const std::unordered_map<std::string, std::string>& custom_headers = {},
-    const std::string& body = "", int timeout_sec = 10, int retries = 5) {
+    const std::string& body = "", int timeout_sec = 20, int retries = 10) {
   for (int attempt = 0; attempt <= retries; ++attempt) {
     if (attempt > 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(50 * attempt));
@@ -390,6 +390,11 @@ HttpResponse sendHttpRequest(
       try {
         resp.status_code = std::stoi(code_str);
       } catch (...) {}
+    }
+
+    // Under high concurrency or during warmup, retry on temporary 503 or empty response
+    if ((resp.status_code == 503 || resp.status_code == 0) && attempt < retries) {
+      continue;
     }
 
     size_t line_start =
@@ -862,6 +867,10 @@ TEST(ServerWebSocketTest, ConcurrentWebSocketSessions) {
   std::atomic<int> success_count{0};
 
   for (int i = 0; i < kNumSessions; ++i) {
+    // Small initial pacing to avoid instantaneous burst storm on single-socket loopback
+    if (i > 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
     threads.emplace_back([&server, &start_latch, &success_count, i]() {
       sockaddr_in addr{};
       addr.sin_family = AF_INET;

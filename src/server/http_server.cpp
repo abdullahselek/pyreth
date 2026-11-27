@@ -456,6 +456,7 @@ public:
     }
     Impl* expected = this;
     activeInstance().compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+    WebSocketServerContext::instance().reset();
     if (pool_) {
       pool_->shutdown();
     }
