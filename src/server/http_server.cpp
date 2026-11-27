@@ -168,6 +168,16 @@ public:
         },
         {drogon::Get});
 
+    // Register metrics endpoint (Phase 4)
+    drogon::app().registerHandlerViaRegex(
+        R"(/v1/models/([^/]+)/metrics)",
+        [this](const drogon::HttpRequestPtr& /*req*/,
+               std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+               std::string model_name) {
+          handleMetricsRequest(std::move(callback), std::move(model_name));
+        },
+        {drogon::Get});
+
     drogon::app().registerHandlerViaRegex(
         R"(/v1/models/([^/]+))",
         [this](const drogon::HttpRequestPtr& /*req*/,
@@ -201,8 +211,11 @@ public:
           root["inputs"] = Json::arrayValue;
           root["outputs"] = Json::arrayValue;
 
-          if (entry.session) {
-            const auto& info = entry.session->getModelInfo();
+          InferenceSession* session_ptr =
+              entry.session ? entry.session.get()
+                            : (entry.batcher ? entry.batcher->session() : nullptr);
+          if (session_ptr) {
+            const auto& info = session_ptr->getModelInfo();
             for (const auto& inp : info.inputs) {
               Json::Value inp_val;
               inp_val["name"] = inp.name;
@@ -392,6 +405,10 @@ public:
     return registry_.registerBatcher(std::move(name), std::move(batcher));
   }
 
+  [[nodiscard]] Result<void> unregisterBatcher(std::string_view name) {
+    return registry_.unregisterBatcher(name);
+  }
+
   [[nodiscard]] Result<void> unregisterModel(std::string_view name) {
     return registry_.unregisterModel(name);
   }
@@ -402,6 +419,62 @@ public:
   [[nodiscard]] const ModelRegistry& modelRegistry() const noexcept { return registry_; }
 
 private:
+  void handleMetricsRequest(std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                            std::string model_name) {
+    auto entry_res = registry_.getModelEntry(model_name);
+    if (!entry_res.isOk()) {
+      auto resp = drogon::HttpResponse::newHttpResponse();
+      resp->setStatusCode(drogon::k404NotFound);
+      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      Json::Value err;
+      err["error"] = "Model '" + model_name + "' not found";
+      Json::StreamWriterBuilder writer;
+      writer["indentation"] = "";
+      resp->setBody(Json::writeString(writer, err));
+      callback(resp);
+      return;
+    }
+
+    const auto& entry = entry_res.value();
+    if (!entry.batcher) {
+      auto resp = drogon::HttpResponse::newHttpResponse();
+      resp->setStatusCode(drogon::k404NotFound);
+      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      Json::Value err;
+      err["error"] = "Dynamic batcher metrics not available for model '" + model_name + "'";
+      Json::StreamWriterBuilder writer;
+      writer["indentation"] = "";
+      resp->setBody(Json::writeString(writer, err));
+      callback(resp);
+      return;
+    }
+
+    auto metrics = entry.batcher->metrics();
+    Json::Value root;
+    root["model_name"] = model_name;
+    root["requests_submitted"] = static_cast<Json::Value::UInt64>(metrics.requests_submitted);
+    root["requests_completed"] = static_cast<Json::Value::UInt64>(metrics.requests_completed);
+    root["requests_rejected"] = static_cast<Json::Value::UInt64>(metrics.requests_rejected);
+    root["batches_dispatched"] = static_cast<Json::Value::UInt64>(metrics.batches_dispatched);
+    root["full_batches"] = static_cast<Json::Value::UInt64>(metrics.full_batches);
+    root["timeout_batches"] = static_cast<Json::Value::UInt64>(metrics.timeout_batches);
+    root["total_batched_samples"] = static_cast<Json::Value::UInt64>(metrics.total_batched_samples);
+    root["avg_batch_size"] = metrics.averageBatchSize();
+    root["average_batch_size"] = metrics.averageBatchSize();
+    root["avg_queue_time_ms"] = metrics.averageBatchWaitUs() / 1000.0;
+    root["avg_exec_time_ms"] = metrics.averageExecutionUs() / 1000.0;
+    root["total_batch_wait_us"] = static_cast<Json::Value::UInt64>(metrics.total_batch_wait_us);
+    root["total_execution_us"] = static_cast<Json::Value::UInt64>(metrics.total_execution_us);
+
+    auto resp = drogon::HttpResponse::newHttpResponse();
+    resp->setStatusCode(drogon::k200OK);
+    resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    Json::StreamWriterBuilder writer;
+    writer["indentation"] = "";
+    resp->setBody(Json::writeString(writer, root));
+    callback(resp);
+  }
+
   void handleInferRequest(const drogon::HttpRequestPtr& req,
                           std::function<void(const drogon::HttpResponsePtr&)>&& callback,
                           std::string model_name, std::string model_version) {
@@ -420,7 +493,7 @@ private:
     }
 
     const auto& entry = entry_res.value();
-    if (!entry.session || entry.state != "ready") {
+    if ((!entry.session && !entry.batcher) || entry.state != "ready") {
       auto resp = drogon::HttpResponse::newHttpResponse();
       resp->setStatusCode(drogon::k503ServiceUnavailable);
       resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
@@ -436,7 +509,7 @@ private:
     std::string active_version = !model_version.empty() ? model_version : entry.version;
     std::shared_ptr<InferenceSession> session = entry.session;
 
-    ExecutionMode mode = ExecutionMode::Async;
+    ExecutionMode mode = entry.batcher ? ExecutionMode::DynamicBatching : ExecutionMode::Async;
     std::string mode_str = req->getHeader("x-pyreth-execution-mode");
     if (mode_str.empty()) {
       mode_str = req->getHeader("X-Pyreth-Execution-Mode");
@@ -459,11 +532,185 @@ private:
     }
 
     if (mode == ExecutionMode::DynamicBatching) {
+      if (!entry.batcher || !entry.batcher->isValid()) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k400BadRequest);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        Json::Value err;
+        err["error"] = "Dynamic batcher is not configured for model '" + model_name + "'";
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+        resp->setBody(Json::writeString(writer, err));
+        callback(resp);
+        return;
+      }
+
+      auto lease = memory_pool_.acquire();
+      ArenaAllocator& arena = lease.get();
+
+      auto req_res = parseKServeRequest(req->body(), arena);
+      if (!req_res.isOk()) {
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k400BadRequest);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        Json::Value err;
+        err["error"] = std::string(req_res.error().message());
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+        resp->setBody(Json::writeString(writer, err));
+        callback(resp);
+        return;
+      }
+
+      auto tensors = req_res.value().extractTensors();
+
+      std::vector<std::string> output_names;
+      if (session) {
+        output_names = session->getOutputNames();
+      } else if (entry.batcher->session()) {
+        output_names = entry.batcher->session()->getOutputNames();
+      }
+
+      auto cancelled = std::make_shared<std::atomic<bool>>(false);
+      auto responded = std::make_shared<std::atomic<bool>>(false);
+      auto cb = std::make_shared<std::function<void(const drogon::HttpResponsePtr&)>>(
+          std::move(callback));
+
+      trantor::TimerId timer_id{};
+      auto loop = trantor::EventLoop::getEventLoopOfCurrentThread();
+      if (!loop) {
+        loop = drogon::app().getLoop();
+      }
+      if (config_.request_timeout_ms > 0 && loop) {
+        double delay_sec = static_cast<double>(config_.request_timeout_ms) / 1000.0;
+        timer_id = loop->runAfter(delay_sec, [cb, responded, cancelled]() {
+          cancelled->store(true, std::memory_order_release);
+          if (!responded->exchange(true, std::memory_order_acq_rel)) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k504GatewayTimeout);
+            resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+            Json::Value err;
+            err["error"] = "Request execution timed out";
+            Json::StreamWriterBuilder writer;
+            writer["indentation"] = "";
+            resp->setBody(Json::writeString(writer, err));
+            (*cb)(resp);
+          }
+        });
+      }
+
+      auto send_response = [loop, timer_id, cb](const drogon::HttpResponsePtr& resp) {
+        if (loop && loop->isRunning()) {
+          loop->runInLoop([loop, timer_id, cb, resp]() {
+            if (timer_id != trantor::TimerId{}) {
+              loop->invalidateTimer(timer_id);
+            }
+            (*cb)(resp);
+          });
+        } else {
+          if (loop && timer_id != trantor::TimerId{}) {
+            loop->invalidateTimer(timer_id);
+          }
+          (*cb)(resp);
+        }
+      };
+
+      auto shared_lease = std::make_shared<decltype(lease)>(std::move(lease));
+
+      auto completion_cb = [this, m_name = std::move(model_name), ver = std::move(active_version),
+                            output_names = std::move(output_names), cancelled, responded,
+                            send_response, shared_lease](Result<std::vector<Tensor>> run_res) {
+        if (cancelled->load(std::memory_order_acquire) ||
+            !running_.load(std::memory_order_acquire)) {
+          if (!responded->exchange(true, std::memory_order_acq_rel)) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k503ServiceUnavailable);
+            resp->setCloseConnection(true);
+            send_response(resp);
+          }
+          return;
+        }
+
+        if (!run_res.isOk()) {
+          if (!responded->exchange(true, std::memory_order_acq_rel)) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k500InternalServerError);
+            resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+            Json::Value err;
+            err["error"] = std::string(run_res.error().message());
+            Json::StreamWriterBuilder writer;
+            writer["indentation"] = "";
+            resp->setBody(Json::writeString(writer, err));
+            send_response(resp);
+          }
+          return;
+        }
+
+        auto ser_res = serializeKServeResponse(m_name, output_names, run_res.value(), ver);
+        if (!ser_res.isOk()) {
+          if (!responded->exchange(true, std::memory_order_acq_rel)) {
+            auto resp = drogon::HttpResponse::newHttpResponse();
+            resp->setStatusCode(drogon::k500InternalServerError);
+            resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+            Json::Value err;
+            err["error"] = std::string(ser_res.error().message());
+            Json::StreamWriterBuilder writer;
+            writer["indentation"] = "";
+            resp->setBody(Json::writeString(writer, err));
+            send_response(resp);
+          }
+          return;
+        }
+
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(drogon::k200OK);
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        resp->setBody(std::move(ser_res.value()));
+        resp->addHeader("X-Pyreth-Execution-Mode", "batch");
+
+        std::ostringstream ss;
+        ss << std::this_thread::get_id();
+        resp->addHeader("X-Pyreth-Worker-Thread-Id", ss.str());
+
+        if (!responded->exchange(true, std::memory_order_acq_rel)) {
+          send_response(resp);
+        }
+      };
+
+      auto submit_status = entry.batcher->submit(tensors, std::move(completion_cb));
+      if (!submit_status.isOk()) {
+        if (timer_id != trantor::TimerId{} && loop) {
+          loop->invalidateTimer(timer_id);
+        }
+        if (!responded->exchange(true, std::memory_order_acq_rel)) {
+          auto resp = drogon::HttpResponse::newHttpResponse();
+          if (submit_status.error().code() == ErrorCode::QueueFull) {
+            resp->setStatusCode(drogon::k429TooManyRequests);
+            resp->addHeader("Retry-After", "1");
+          } else if (submit_status.error().code() == ErrorCode::InvalidArgument ||
+                     submit_status.error().code() == ErrorCode::InvalidDimensions) {
+            resp->setStatusCode(drogon::k400BadRequest);
+          } else {
+            resp->setStatusCode(drogon::k503ServiceUnavailable);
+          }
+          resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+          Json::Value err;
+          err["error"] = std::string(submit_status.error().message());
+          Json::StreamWriterBuilder writer;
+          writer["indentation"] = "";
+          resp->setBody(Json::writeString(writer, err));
+          (*cb)(resp);
+        }
+      }
+      return;
+    }
+
+    if (!session) {
       auto resp = drogon::HttpResponse::newHttpResponse();
-      resp->setStatusCode(drogon::k501NotImplemented);
+      resp->setStatusCode(drogon::k400BadRequest);
       resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
       Json::Value err;
-      err["error"] = "Dynamic batching execution mode is not supported in Phase 3";
+      err["error"] = "Model '" + model_name + "' has no InferenceSession configured";
       Json::StreamWriterBuilder writer;
       writer["indentation"] = "";
       resp->setBody(Json::writeString(writer, err));
@@ -777,6 +1024,10 @@ Result<void> HttpServer::registerModel(std::string name, std::shared_ptr<Inferen
 Result<void> HttpServer::registerBatcher(std::string name,
                                          std::shared_ptr<DynamicBatcher> batcher) {
   return impl_->registerBatcher(std::move(name), std::move(batcher));
+}
+
+Result<void> HttpServer::unregisterBatcher(std::string_view name) {
+  return impl_->unregisterBatcher(name);
 }
 
 Result<void> HttpServer::unregisterModel(std::string_view name) {

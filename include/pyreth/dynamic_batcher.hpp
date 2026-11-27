@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <pyreth/common.hpp>
@@ -186,6 +187,36 @@ public:
   DynamicBatcher& operator=(const DynamicBatcher&) = delete;
 
   /**
+   * @brief Completion callback invoked when a batched inference request completes.
+   */
+  using CompletionCallback = std::function<void(Result<std::vector<Tensor>>)>;
+
+  /**
+   * @brief Enqueues an asynchronous inference request with positional input tensors and a
+   * non-blocking completion callback.
+   *
+   * @param inputs Ordered input tensors for a single request (e.g., batch size >= 1 along axis 0).
+   * @param callback Callback executed upon batch completion with demultiplexed outputs.
+   * @return Result status indicating whether the request was accepted into the batch queue.
+   */
+  [[nodiscard]] Result<void> submit(std::span<const Tensor> inputs, CompletionCallback callback);
+
+  /**
+   * @brief Overload for initializer-list input tensors with completion callback.
+   */
+  [[nodiscard]] Result<void> submit(std::initializer_list<Tensor> inputs,
+                                    CompletionCallback callback) {
+    return submit(std::span<const Tensor>(inputs.begin(), inputs.size()), std::move(callback));
+  }
+
+  /**
+   * @brief Enqueues an asynchronous inference request using named input tensors and a completion
+   * callback.
+   */
+  [[nodiscard]] Result<void> submit(const std::unordered_map<std::string, Tensor>& named_inputs,
+                                    CompletionCallback callback);
+
+  /**
    * @brief Enqueues an asynchronous inference request with positional input tensors.
    *
    * @param inputs Ordered input tensors for a single request (e.g., batch size >= 1 along axis 0).
@@ -272,6 +303,11 @@ public:
    * @brief Returns true if the batcher is initialized and holds a valid InferenceSession.
    */
   [[nodiscard]] bool isValid() const noexcept;
+
+  /**
+   * @brief Returns the underlying InferenceSession pointer, or nullptr if invalid.
+   */
+  [[nodiscard]] InferenceSession* session() const noexcept;
 
   /**
    * @brief Returns the active configuration for this batcher.

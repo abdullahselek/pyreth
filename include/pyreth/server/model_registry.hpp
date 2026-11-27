@@ -47,6 +47,12 @@ public:
   [[nodiscard]] Result<void> registerBatcher(std::string name,
                                              std::shared_ptr<DynamicBatcher> batcher);
 
+  [[nodiscard]] Result<void> registerBatcher(std::string name, DynamicBatcher batcher) {
+    return registerBatcher(std::move(name), std::make_shared<DynamicBatcher>(std::move(batcher)));
+  }
+
+  [[nodiscard]] Result<void> unregisterBatcher(std::string_view name);
+
   [[nodiscard]] Result<void> unregisterModel(std::string_view name);
 
   [[nodiscard]] bool hasModel(std::string_view name) const;

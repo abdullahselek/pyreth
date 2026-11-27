@@ -20,6 +20,8 @@ struct PendingRequest {
   size_t batch_size{1};
   std::chrono::steady_clock::time_point arrival_time;
   std::promise<Result<std::vector<Tensor>>> promise;
+  DynamicBatcher::CompletionCallback callback;
+  bool has_promise{true};
 };
 
 [[nodiscard]] bool hasMatchingTrailingDims(const PendingRequest& a,
@@ -263,7 +265,12 @@ struct DynamicBatcher::Impl {
     total_batch_wait_us.fetch_add(wait_us, std::memory_order_release);
     requests_completed.fetch_add(batch.size(), std::memory_order_release);
     for (auto& req : batch) {
-      req.promise.set_value(Result<std::vector<Tensor>>::failure(err));
+      if (req.callback) {
+        req.callback(Result<std::vector<Tensor>>::failure(err));
+      }
+      if (req.has_promise) {
+        req.promise.set_value(Result<std::vector<Tensor>>::failure(err));
+      }
     }
     finishInFlightBatch();
   }
@@ -400,7 +407,16 @@ struct DynamicBatcher::Impl {
     total_execution_us.fetch_add(exec_us, std::memory_order_release);
 
     for (size_t i = 0; i < batch.size(); ++i) {
-      batch[i].promise.set_value(std::move(request_results[i]));
+      if (batch[i].callback) {
+        if (batch[i].has_promise) {
+          batch[i].callback(request_results[i]);
+        } else {
+          batch[i].callback(std::move(request_results[i]));
+        }
+      }
+      if (batch[i].has_promise) {
+        batch[i].promise.set_value(std::move(request_results[i]));
+      }
     }
 
     finishInFlightBatch();
@@ -601,6 +617,105 @@ Result<TaskHandle<Result<std::vector<Tensor>>>> DynamicBatcher::submit(
   return submit(std::span<const Tensor>(ordered_inputs));
 }
 
+Result<void> DynamicBatcher::submit(std::span<const Tensor> inputs, CompletionCallback callback) {
+  if (!isValid()) {
+    return Result<void>::failure(StatusCode::INVALID_ARGUMENT,
+                                 "DynamicBatcher is uninitialized or invalid");
+  }
+
+  if (impl_->shutdown_flag.load(std::memory_order_acquire)) {
+    impl_->requests_rejected.fetch_add(1, std::memory_order_relaxed);
+    return Result<void>::failure(StatusCode::INTERNAL_ERROR, "DynamicBatcher has been shut down");
+  }
+
+  auto val_status = impl_->session->validateInputs(inputs);
+  if (!val_status.isOk()) {
+    impl_->requests_rejected.fetch_add(1, std::memory_order_relaxed);
+    return Result<void>::failure(val_status.error());
+  }
+
+  if (inputs.empty() || inputs[0].rank() == 0) {
+    impl_->requests_rejected.fetch_add(1, std::memory_order_relaxed);
+    return Result<void>::failure(
+        StatusCode::INVALID_DIMENSIONS,
+        "DynamicBatcher requires input tensors with rank >= 1 (leading batch dimension)");
+  }
+
+  const int64_t req_batch = inputs[0].shape()[0];
+  for (size_t i = 1; i < inputs.size(); ++i) {
+    if (inputs[i].rank() == 0 || inputs[i].shape()[0] != req_batch) {
+      impl_->requests_rejected.fetch_add(1, std::memory_order_relaxed);
+      return Result<void>::failure(
+          StatusCode::INVALID_DIMENSIONS,
+          "All inputs in a request must have the same batch size along axis 0");
+    }
+  }
+
+  if (req_batch <= 0 || static_cast<size_t>(req_batch) > impl_->effective_max_batch_size) {
+    impl_->requests_rejected.fetch_add(1, std::memory_order_relaxed);
+    return Result<void>::failure(StatusCode::INVALID_DIMENSIONS,
+                                 "Request batch size exceeds DynamicBatcher max_batch_size");
+  }
+
+  PendingRequest req;
+  req.inputs.assign(inputs.begin(), inputs.end());
+  req.batch_size = static_cast<size_t>(req_batch);
+  req.arrival_time = std::chrono::steady_clock::now();
+  req.callback = std::move(callback);
+  req.has_promise = false;
+
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->shutdown_flag.load(std::memory_order_relaxed)) {
+      impl_->requests_rejected.fetch_add(1, std::memory_order_relaxed);
+      return Result<void>::failure(StatusCode::INTERNAL_ERROR, "DynamicBatcher has been shut down");
+    }
+
+    if (impl_->pending_queue.size() >= impl_->config.max_queue_capacity) {
+      impl_->requests_rejected.fetch_add(1, std::memory_order_relaxed);
+      return Result<void>::failure(StatusCode::QUEUE_FULL, "DynamicBatcher request queue is full");
+    }
+
+    const bool was_empty = impl_->pending_queue.empty();
+    impl_->pending_samples += req.batch_size;
+    impl_->pending_queue.push_back(std::move(req));
+    impl_->requests_submitted.fetch_add(1, std::memory_order_relaxed);
+
+    if (was_empty || impl_->canFlushImmediatelyLocked()) {
+      impl_->cv.notify_one();
+    }
+  }
+
+  return Result<void>::success();
+}
+
+Result<void> DynamicBatcher::submit(const std::unordered_map<std::string, Tensor>& named_inputs,
+                                    CompletionCallback callback) {
+  if (!isValid()) {
+    return Result<void>::failure(StatusCode::INVALID_ARGUMENT,
+                                 "DynamicBatcher is uninitialized or invalid");
+  }
+
+  const auto& model_info = impl_->session->getModelInfo();
+  if (named_inputs.size() != model_info.inputs.size()) {
+    impl_->requests_rejected.fetch_add(1, std::memory_order_relaxed);
+    return Result<void>::failure(StatusCode::INVALID_ARGUMENT,
+                                 "Number of named input tensors does not match model input count");
+  }
+
+  std::vector<Tensor> ordered_inputs(model_info.inputs.size());
+  for (const auto& [name, tensor] : named_inputs) {
+    auto idx_res = model_info.getInputIndex(name);
+    if (!idx_res.isOk()) {
+      impl_->requests_rejected.fetch_add(1, std::memory_order_relaxed);
+      return Result<void>::failure(idx_res.error());
+    }
+    ordered_inputs[idx_res.value()] = tensor;
+  }
+
+  return submit(std::span<const Tensor>(ordered_inputs), std::move(callback));
+}
+
 Result<std::vector<Tensor>> DynamicBatcher::run(std::span<const Tensor> inputs) {
   auto handle_res = submit(inputs);
   if (!handle_res.isOk()) {
@@ -645,6 +760,10 @@ bool DynamicBatcher::isShutdown() const noexcept {
 
 bool DynamicBatcher::isValid() const noexcept {
   return impl_ != nullptr && impl_->session != nullptr && impl_->session->isValid();
+}
+
+InferenceSession* DynamicBatcher::session() const noexcept {
+  return impl_ ? impl_->session : nullptr;
 }
 
 const DynamicBatcherConfig& DynamicBatcher::getConfig() const noexcept {

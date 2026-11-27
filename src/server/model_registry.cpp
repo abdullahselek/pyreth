@@ -81,6 +81,16 @@ Result<void> ModelRegistry::registerBatcher(std::string name,
   return Result<void>::success();
 }
 
+Result<void> ModelRegistry::unregisterBatcher(std::string_view name) {
+  std::unique_lock<std::shared_mutex> lock(mutex_);
+  auto it = models_.find(std::string(name));
+  if (it == models_.end() || !it->second.batcher) {
+    return Result<void>::failure(StatusCode::MODEL_NOT_FOUND, "Batcher not found");
+  }
+  it->second.batcher = nullptr;
+  return Result<void>::success();
+}
+
 Result<void> ModelRegistry::unregisterModel(std::string_view name) {
   std::unique_lock<std::shared_mutex> lock(mutex_);
   auto it = models_.find(std::string(name));
